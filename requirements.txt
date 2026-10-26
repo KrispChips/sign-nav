@@ -5,3 +5,5 @@ torch
 transformers>=4.40
 ollama
 pyttsx3; sys_platform != "darwin"
+onnxruntime
+huggingface_hub

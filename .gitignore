@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+debug_out/
+*.npz
+*.mov
+*.mp4
