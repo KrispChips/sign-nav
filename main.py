@@ -75,6 +75,7 @@ def main():
     ap.add_argument("--close-thr", type=float, default=0.40, help="side farness below which it closes")
     ap.add_argument("--debug-dir", default="debug_out")
     ap.add_argument("--show", action="store_true")
+    ap.add_argument("--out-video", help="write an annotated video (scene + chat log), e.g. annotated.mp4")
     ap.add_argument("--no-tts", action="store_true")
     a = ap.parse_args()
 
@@ -82,6 +83,7 @@ def main():
     from vlm import SignReader
     from intersection import (DepthEstimator, IntersectionDetector, IntersectionWatcher,
                               resolve_model)
+    from annotate import ChatLog, VideoOut, draw_scene
 
     imu = (ImuTrack(a.imu, a.imu_offset, a.gyro_sign) if a.imu else
            UdpImu(a.udp_imu) if a.udp_imu else None)
@@ -100,6 +102,33 @@ def main():
     log = open(os.path.join(a.debug_dir, "reads.jsonl"), "a")
     ilog = open(os.path.join(a.debug_dir, "intersections.jsonl"), "a")
 
+    chat = ChatLog()
+    video = VideoOut(a.out_video, a.fps) if a.out_video else None
+    flash_until, flash = -1.0, None
+
+    def handle_read(fut, tr, t):
+        try:
+            entries, raw = fut.result()
+        except Exception as e:  # noqa: BLE001
+            print(f"[vlm] error on track {tr.id}: {e}")
+            chat.sign_result(tr, t, None, [], None, error=e)
+            return
+        mount = mounting(tr.best_info["theta"], tr.best_info["frontality"])
+        rel = heading.relative(tr.last_theta, tr.last_yaw)   # where it is NOW-ish
+        sentence = describe(entries, rel, mount)
+        log.write(json.dumps(dict(track=tr.id, t=t, entries=entries, raw=raw,
+                                  mount=mount, rel=rel, q=tr.best_q, info=tr.best_info,
+                                  said=sentence)) + "\n"); log.flush()
+        chat.sign_result(tr, t, sentence, entries, mount)
+        if sentence:
+            speaker.say(sentence)
+
+    def submit(tr, t):
+        pending[pool.submit(reader, tr.best_crop)] = tr
+        cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), tr.best_crop)
+        chat.sign_pending(tr, t)
+
+    frame = None
     for frame in video_frames(a.source, camera, imu, a.fps):
         heading.update(frame.yaw_deg, frame.t)
         t0 = time.time()
@@ -112,63 +141,46 @@ def main():
             if sentence:
                 cv2.imwrite(os.path.join(a.debug_dir, f"opening_{frame.t:07.1f}s.jpg"), frame.image)
                 speaker.say(sentence, dedupe=False)   # the detector has its own cooldown
+                chat.opening(frame.t, sentence, res)
+                flash_until, flash = frame.t + 1.0, res["event"].replace("_", " ").upper()
         dets = detector(frame.image)
         for tr in tracker.update(frame, dets):
-            pending[pool.submit(reader, tr.best_crop)] = tr
-            cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), tr.best_crop)
+            submit(tr, frame.t)
 
         for fut in [f for f in pending if f.done()]:
-            tr = pending.pop(fut)
-            try:
-                entries, raw = fut.result()
-            except Exception as e:  # noqa: BLE001
-                print(f"[vlm] error on track {tr.id}: {e}")
-                continue
-            mount = mounting(tr.best_info["theta"], tr.best_info["frontality"])
-            rel = heading.relative(tr.last_theta, tr.last_yaw)   # where it is NOW-ish
-            sentence = describe(entries, rel, mount)
-            log.write(json.dumps(dict(track=tr.id, t=frame.t, entries=entries, raw=raw,
-                                      mount=mount, rel=rel, q=tr.best_q, info=tr.best_info,
-                                      said=sentence)) + "\n"); log.flush()
-            if sentence:
-                speaker.say(sentence)
+            handle_read(fut, pending.pop(fut), frame.t)
 
-        if a.show:
-            vis = frame.image.copy()
-            for t in tracker.tracks:
-                x1, y1, x2, y2 = map(int, t.box)
-                col = (0, 200, 0) if t.submitted else (0, 165, 255)
-                cv2.rectangle(vis, (x1, y1), (x2, y2), col, 2)
-                cv2.putText(vis, f"#{t.id} q={t.best_q:.2f} th={t.last_theta:+.0f}",
-                            (x1, max(15, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
-            info = f"t={frame.t:6.1f}s det={1000*(time.time()-t0):.0f}ms pending={len(pending)}"
+        if a.show or video:
+            info = f"t={frame.t:6.1f}s  {1000*(time.time()-t0):.0f}ms/frame  reading={len(pending)}"
             if frame.yaw_deg is not None:
-                info += f" yaw={frame.yaw_deg:+.0f} heading={heading.value:+.0f}"
-            if watcher:
-                r = watcher.last
-                info += (" depth: head turned" if r is None else
-                         f" L={r['ema']['left']:.2f} C={r['ema']['center']:.2f}"
-                         f" R={r['ema']['right']:.2f} [{r['label']}]")
-            cv2.putText(vis, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            h, w = vis.shape[:2]
-            s = 960 / max(h, w)
-            cv2.imshow("signs", cv2.resize(vis, (int(w * s), int(h * s))))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+                info += f"  yaw={frame.yaw_deg:+.0f} heading={heading.value:+.0f}"
+            if watcher and watcher.last is None:
+                info += "  depth paused: head turned"
+            scene = draw_scene(frame.image, tracker.tracks, watcher.last if watcher else None,
+                               frame.t, info, flash if frame.t <= flash_until else None)
+            vis = video.compose(scene, chat) if video else scene
+            if video:
+                video.write(vis)
+            if a.show:
+                s = min(1.0, 1600 / vis.shape[1])
+                cv2.imshow("signs", cv2.resize(vis, None, fx=s, fy=s) if s < 1 else vis)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
 
     for tr in tracker.flush():   # signs still in view when the stream ended
-        pending[pool.submit(reader, tr.best_crop)] = tr
-        cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), tr.best_crop)
-    for fut, tr in list(pending.items()):   # flush outstanding reads at end of file
-        entries, raw = fut.result()
-        s = describe(entries, heading.relative(tr.last_theta, tr.last_yaw),
-                     mounting(tr.best_info["theta"], tr.best_info["frontality"]))
-        if s:
-            speaker.say(s)
+        submit(tr, frame.t if frame else 0.0)
+    for fut, tr in list(pending.items()):   # wait for outstanding reads
+        handle_read(fut, tr, frame.t if frame else 0.0)
+    if video and frame is not None:   # hold the last frame so late reads are visible
+        info = f"t={frame.t:6.1f}s  end of video"
+        scene = draw_scene(frame.image, [], None, frame.t, info)
+        for _ in range(int(3 * a.fps)):
+            video.write(video.compose(scene, chat))
+    if video:
+        video.close()
     while not speaker.q.empty():
         time.sleep(0.2)
     time.sleep(3.0)  # let the last sentence finish
-
 
 if __name__ == "__main__":
     main()

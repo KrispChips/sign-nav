@@ -63,6 +63,19 @@ Live, any stream OpenCV can open works, e.g. `--source rtsp://<phone-ip>:8554/li
 webcam index if the iPhone shows up as a camera on your PC. Live IMU: send UDP JSON
 `{"yaw_deg": 12.3}` to `--udp-imu 9001`.
 
+## Annotated video
+
+```bash
+python main.py --source walk.mp4 --hfov 69 --no-tts --out-video annotated.mp4
+```
+Left: the video with sign boxes (orange = still collecting sightings, green = sent to Gemma),
+the live left/center/right farness bars, and a red flash on each opening event.
+Right: a chat log, newest at the bottom. Each sign card shows the crop Gemma saw, "reading..."
+until it answers, then the spoken sentence and every entry with its arrow. Opening events get
+their own cards. One output frame per processed frame, so it plays at real speed.
+If ffmpeg is on PATH the file is re-encoded to H.264; otherwise it stays mp4v (VLC plays it).
+Works together with `--show`, which then shows the same side-by-side view live.
+
 ## Debugging
 
 Everything lands in `debug_out/`:
