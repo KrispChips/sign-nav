@@ -28,6 +28,10 @@ undistorted frame ──► Depth Anything V2 (ONNX) ──► farness profile �
 pip install -r requirements.txt
 ollama pull gemma4:e4b          # ollama must be running
 ```
+Install torch for your GPU first (https://pytorch.org/get-started/locally). RTX 50-series
+(Blackwell) cards need a CUDA 12.8+ build, e.g. `--index-url https://download.pytorch.org/whl/cu130`;
+older builds like cu126 load but fail on the first GPU op. The detector then falls back to CPU.
+
 Grounding DINO tiny and Depth Anything V2 small (int8 ONNX) download from Hugging Face on first run. A GPU helps a lot (CPU works, slowly).
 
 ## 1. Record test walks with the iPhone

@@ -31,6 +31,15 @@ class SignDetector:
         if device is None:
             device = "cuda" if torch.cuda.is_available() else (
                 "mps" if torch.backends.mps.is_available() else "cpu")
+        if device == "cuda":
+            # A torch build without kernels for this GPU (e.g. cu126 on an RTX 50xx) only
+            # warns at import and crashes on the first real op, so run one now.
+            try:
+                (torch.ones(1, device="cuda") + 1).item()
+            except RuntimeError as e:
+                print(f"[detector] CUDA unusable, falling back to CPU (slow): {e}\n"
+                      "[detector] Install a torch build for your GPU, see README > Setup.")
+                device = "cpu"
         self.device = device
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device).eval()
