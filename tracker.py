@@ -6,7 +6,12 @@ A track is handed back for reading (once) when:
   - its best quality is good enough (>= ready_q) and hasn't improved for `patience` seconds
     (you've stopped getting closer, or you're looking away), or
   - it is lost, and its best quality is at least min_q.
-Tracks need `min_hits` sightings first, to drop one-frame false positives."""
+Tracks need `min_hits` sightings first, to drop one-frame false positives.
+
+If the sign filter rejects a track (call `reject`), it can be handed back again only once
+its best quality beats the rejected one by `retry_gain` (a far, unreadable view of a real
+sign deserves a second look up close), and at most `max_attempts` times in total, so a
+painting isn't rechecked every few frames."""
 import math
 
 import numpy as np
@@ -33,6 +38,7 @@ class Track:
         self.id, self.box = tid, np.asarray(box, float)
         self.first_t = self.last_t = self.best_t = t
         self.hits, self.submitted = 0, False
+        self.attempts, self.rejected_q, self.reject_reason = 0, None, None
         self.best_q, self.best_crop, self.best_info = 0.0, None, None
         self.last_theta, self.last_yaw = 0.0, None
 
@@ -54,10 +60,24 @@ def _iou(a, b):
 
 class Tracker:
     def __init__(self, ready_q=0.5, great_q=0.85, min_q=0.2, min_hits=2, patience=0.6,
-                 max_age=1.5, iou_thr=0.2):
+                 max_age=1.5, iou_thr=0.2, retry_gain=1.3, max_attempts=2):
         self.ready_q, self.great_q, self.min_q = ready_q, great_q, min_q
         self.min_hits, self.patience, self.max_age, self.iou_thr = min_hits, patience, max_age, iou_thr
+        self.retry_gain, self.max_attempts = retry_gain, max_attempts
         self.tracks, self._next_id = [], 1
+
+    def _eligible(self, tr):
+        if tr.submitted or tr.hits < self.min_hits or tr.attempts >= self.max_attempts:
+            return False
+        return tr.rejected_q is None or tr.best_q > self.retry_gain * tr.rejected_q
+
+    def _hand_out(self, tr):
+        tr.submitted, tr.attempts = True, tr.attempts + 1
+        return tr
+
+    def reject(self, tr, reason):
+        """The filter said this isn't a sign (yet). Allows a later retry, see module doc."""
+        tr.submitted, tr.rejected_q, tr.reject_reason = False, tr.best_q, reason
 
     def _predict(self, tr, frame):
         """Shift the box by the head rotation since it was last seen. At 5 fps a quick head
@@ -106,20 +126,16 @@ class Tracker:
 
         ready = []
         for tr in self.tracks:
-            if tr.submitted or tr.hits < self.min_hits:
+            if not self._eligible(tr):
                 continue
             lost = frame.t - tr.last_t > self.max_age
             settled = tr.best_q >= self.ready_q and frame.t - tr.best_t >= self.patience
             if tr.best_q >= self.great_q or settled or (lost and tr.best_q >= self.min_q):
-                tr.submitted = True
-                ready.append(tr)
+                ready.append(self._hand_out(tr))
         self.tracks = [tr for tr in self.tracks if frame.t - tr.last_t <= self.max_age]
         return ready
 
     def flush(self):
         """At end of stream: everything worth reading that hasn't been read yet."""
-        out = [tr for tr in self.tracks
-               if not tr.submitted and tr.hits >= self.min_hits and tr.best_q >= self.min_q]
-        for tr in out:
-            tr.submitted = True
-        return out
+        return [self._hand_out(tr) for tr in self.tracks
+                if self._eligible(tr) and tr.best_q >= self.min_q]

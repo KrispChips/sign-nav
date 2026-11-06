@@ -1,8 +1,20 @@
 """Sign detector. Grounding DINO (same family as the Sign-Understanding baseline),
 loaded through Hugging Face transformers so there's no repo build step.
-Later: replace with a small YOLO trained on auto-labels from this detector."""
+Later: replace with a small YOLO trained on auto-labels from this detector.
+
+Distractor phrases are appended to the prompt so that lights, outlets, paintings etc. get
+their own label instead of "sign", and those boxes are dropped (stage 1 of the filter).
+Add distractors gradually and check recall after each: a phrase close to the targets
+(e.g. "poster", "door") can start stealing real signs."""
+import re
+
 import cv2
 import numpy as np
+
+TARGETS = ("sign", "room number plate", "door sign", "directional sign")
+TARGET_WORDS = {"sign", "plate", "number"}
+DISTRACTORS = ("light panel", "ceiling light", "electrical outlet", "light switch",
+               "painting", "picture frame", "window", "air vent")
 
 
 def _iou(a, b):
@@ -23,8 +35,7 @@ def nms(dets, thr=0.5):
 
 class SignDetector:
     def __init__(self, model_id="IDEA-Research/grounding-dino-tiny",
-                 prompt="sign. room number plate. door sign. directional sign.",
-                 box_thr=0.30, text_thr=0.25, min_area_px=400, max_area_frac=0.5, device=None):
+                 targets=TARGETS, distractors=DISTRACTORS, box_thr=0.30, text_thr=0.25, min_area_px=400, max_area_frac=0.5, device=None):
         import torch
         from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
         self.torch = torch
@@ -43,7 +54,10 @@ class SignDetector:
         self.device = device
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device).eval()
-        self.prompt, self.box_thr, self.text_thr = prompt, box_thr, text_thr
+        self.prompt = " ".join(f"{p}." for p in (*targets, *distractors))
+        self.distractor_words = {w for p in distractors for w in p.split()} - TARGET_WORDS
+        self.box_thr, self.text_thr = box_thr, text_thr
+        self.dropped = 0   # boxes dropped for a distractor label, for the run summary
         self.min_area, self.max_area_frac = min_area_px, max_area_frac
 
     def __call__(self, bgr):
@@ -60,11 +74,23 @@ class SignDetector:
         except TypeError:  # older transformers
             res = self.processor.post_process_grounded_object_detection(
                 out, inputs.input_ids, box_threshold=self.box_thr, **kw)[0]
+        labels = res.get("text_labels", res.get("labels"))   # strings: newer / older transformers
+        if labels is None or (len(labels) and not isinstance(labels[0], str)):
+            labels = [""] * len(res["scores"])   # no strings available: keep everything
         dets = []
-        for box, s in zip(res["boxes"].cpu().numpy(), res["scores"].cpu().numpy()):
+        for box, s, label in zip(res["boxes"].cpu().numpy(), res["scores"].cpu().numpy(), labels):
+            if self.is_distractor(label):   # before NMS, so it can't suppress a real sign box
+                self.dropped += 1
+                continue
             x1, y1, x2, y2 = [float(v) for v in box]
             area = (x2 - x1) * (y2 - y1)
             if area < self.min_area or area > self.max_area_frac * w * h:
                 continue
             dets.append((np.array([x1, y1, x2, y2]), float(s)))
         return nms(dets)
+
+    def is_distractor(self, label):
+        """Drop only if the label has a distractor word and no target word: Grounding DINO
+        sometimes merges phrases, e.g. "sign picture frame", and those must be kept."""
+        words = set(re.findall(r"[a-z]+", label.lower()))
+        return bool(words & self.distractor_words) and not (words & TARGET_WORDS)

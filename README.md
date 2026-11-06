@@ -19,6 +19,7 @@ undistorted frame ──► Depth Anything V2 (ONNX) ──► farness profile �
 | `tracker.py` | tracking + best-sighting selection | Maybe tune thresholds |
 | `direction.py` | bearing, heading, wall-sign arrow mapping | No |
 | `vlm.py` | Gemma via Ollama, JSON output | No |
+| `signfilter.py` | OCR + CLIP check of each track's best crop before Gemma | No |
 | `intersection.py` | depth model, farness profile, opening detector (from `geometric_intersection_detection.ipynb`) | No |
 | `main.py` | the loop, TTS, debug logging | No |
 
@@ -32,7 +33,8 @@ Install torch for your GPU first (https://pytorch.org/get-started/locally). RTX 
 (Blackwell) cards need a CUDA 12.8+ build, e.g. `--index-url https://download.pytorch.org/whl/cu130`;
 older builds like cu126 load but fail on the first GPU op. The detector then falls back to CPU.
 
-Grounding DINO tiny and Depth Anything V2 small (int8 ONNX) download from Hugging Face on first run. A GPU helps a lot (CPU works, slowly).
+Grounding DINO tiny, CLIP ViT-B/32 and Depth Anything V2 small (int8 ONNX) download from
+Hugging Face on first run. RapidOCR's models ship inside its wheel. A GPU helps a lot (CPU works, slowly).
 
 ## 1. Record test walks with the iPhone
 
@@ -63,12 +65,41 @@ Live, any stream OpenCV can open works, e.g. `--source rtsp://<phone-ip>:8554/li
 webcam index if the iPhone shows up as a camera on your PC. Live IMU: send UDP JSON
 `{"yaw_deg": 12.3}` to `--udp-imu 9001`.
 
+## Distractor filter (lights, outlets, paintings, ...)
+
+Three stages, cheapest first. Stages 2-3 run once per track, on its best rectified crop,
+right before the Gemma call:
+
+1. **Distractor prompts** (`detector.py`): phrases like "ceiling light", "electrical outlet",
+   "painting" are appended to the Grounding DINO prompt, and boxes labelled with them are
+   dropped before NMS. A merged label such as "sign picture frame" is kept: only labels with
+   a distractor word and none of sign/plate/number are dropped. Add phrases to `DISTRACTORS`
+   one at a time and check recall after each (`--no-distractor-prompts` to compare); phrases
+   close to the targets, like "poster" or "door", can steal real signs.
+2. **OCR** (`signfilter.OcrCheck`, RapidOCR = PP-OCR det+rec on ONNX Runtime): keep if lines
+   with confidence >= 0.6 hold >= 2 letters/digits ("B2" passes, an outlet read as "O" doesn't).
+   The detector resize limit is set to `max` 320 (default `min` 736 was ~10-90x slower on
+   crops) and the angle classifier is off, since crops are already rectified.
+3. **CLIP ViT-B/32** (`signfilter.ClipCheck`), only for OCR rejects: rescues symbol-only
+   signs (restroom, exit, elevator, stairs pictograms). Keep if P(sign prompts) - P(distractor
+   prompts) > `--clip-margin` (0). Prompt lists are at the top of `signfilter.py`.
+
+A rejected track can be retried once its best quality beats the rejected one by 30%, at most
+two attempts in total (a far, unreadable real sign gets a second look up close).
+
+Tuning: run a few corridor walks, then go through `debug_out/rejected/` by hand.
+Real signs there mean the filter is too strict: lower `--ocr-min-chars` or `--clip-margin`.
+Distractors reaching Gemma (`track*.jpg`) mean add them to the prompt lists.
+Recall matters more than precision: when in doubt, set the thresholds to keep.
+`--no-clip` runs OCR only, `--no-filter` turns stages 2-3 off.
+
 ## Annotated video
 
 ```bash
 python main.py --source walk.mp4 --hfov 69 --no-tts --out-video annotated.mp4
 ```
-Left: the video with sign boxes (orange = still collecting sightings, green = sent to Gemma),
+Left: the video with sign boxes (orange = still collecting sightings, green = sent to Gemma,
+red = rejected by the filter),
 the live left/center/right farness bars, and a red flash on each opening event.
 Right: a chat log, newest at the bottom. Each sign card shows the crop Gemma saw, "reading..."
 until it answers, then the spoken sentence and every entry with its arrow. Opening events get
@@ -84,6 +115,11 @@ Everything lands in `debug_out/`:
 
 The `--show` window draws tracks: orange = still collecting sightings, green = sent to the VLM.
 
+- `filter.jsonl`: every filter decision: track, attempt, quality, keep, reason
+  (`ocr:0 chars, clip:-0.41`), raw OCR lines with confidences, time taken
+- `rejected/trackNNNN_aK_<reason>.jpg`: every crop the filter rejected
+- `summary.json` (also printed at the end): boxes dropped by distractor labels, crops checked,
+  kept by OCR, rejected by OCR, rescued by CLIP, rejected, sent to the VLM
 - `intersections.jsonl`: per frame, raw and smoothed left/center/right farness, the 24-column
   profile, open/closed label, and for events the user-frame bearings and what was spoken
 - `opening_NNNNN.Ns.jpg`: the frame at each opening event

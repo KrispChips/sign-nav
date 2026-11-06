@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -68,6 +69,14 @@ def main():
     ap.add_argument("--ollama-host", default=None)
     ap.add_argument("--box-thr", type=float, default=0.30)
     ap.add_argument("--ready-q", type=float, default=0.5)
+    ap.add_argument("--no-filter", action="store_true", help="send every track to the VLM (no OCR/CLIP check)")
+    ap.add_argument("--no-clip", action="store_true", help="OCR only: no CLIP rescue of symbol-only signs")
+    ap.add_argument("--no-distractor-prompts", action="store_true",
+                    help="detector prompt without distractor phrases (to compare recall)")
+    ap.add_argument("--ocr-min-chars", type=int, default=2, help="letters/digits needed to keep a crop")
+    ap.add_argument("--ocr-min-conf", type=float, default=0.6, help="OCR line confidence that counts")
+    ap.add_argument("--clip-margin", type=float, default=0.0,
+                    help="CLIP P(sign) - P(distractor) needed to rescue an OCR reject")
     ap.add_argument("--no-intersections", action="store_true", help="skip opening detection")
     ap.add_argument("--depth-model", help="ONNX depth model (default: download Depth Anything V2 small)")
     ap.add_argument("--depth-long-side", type=int, default=518, help="depth input size, multiple of 14")
@@ -79,7 +88,7 @@ def main():
     ap.add_argument("--no-tts", action="store_true")
     a = ap.parse_args()
 
-    from detector import SignDetector   # heavy imports after arg parsing
+    from detector import DISTRACTORS, SignDetector   # heavy imports after arg parsing
     from vlm import SignReader
     from intersection import (DepthEstimator, IntersectionDetector, IntersectionWatcher,
                               resolve_model)
@@ -88,7 +97,14 @@ def main():
     imu = (ImuTrack(a.imu, a.imu_offset, a.gyro_sign) if a.imu else
            UdpImu(a.udp_imu) if a.udp_imu else None)
     camera = Camera(a.calib, a.hfov)
-    detector = SignDetector(box_thr=a.box_thr)
+    detector = SignDetector(box_thr=a.box_thr,
+                            distractors=() if a.no_distractor_prompts else DISTRACTORS)
+    sign_filter = None
+    if not a.no_filter:
+        from signfilter import ClipCheck, OcrCheck, SignFilter
+        sign_filter = SignFilter(OcrCheck(a.ocr_min_conf, a.ocr_min_chars),
+                                 None if a.no_clip else ClipCheck(margin=a.clip_margin,
+                                                                  device=detector.device))
     reader = SignReader(a.model, a.ollama_host)
     tracker = Tracker(ready_q=a.ready_q)
     heading = Heading()
@@ -101,6 +117,10 @@ def main():
     os.makedirs(a.debug_dir, exist_ok=True)
     log = open(os.path.join(a.debug_dir, "reads.jsonl"), "a")
     ilog = open(os.path.join(a.debug_dir, "intersections.jsonl"), "a")
+    flog = open(os.path.join(a.debug_dir, "filter.jsonl"), "a")
+    rejected_dir = os.path.join(a.debug_dir, "rejected")
+    os.makedirs(rejected_dir, exist_ok=True)
+    sent_to_vlm = 0
 
     chat = ChatLog()
     video = VideoOut(a.out_video, a.fps) if a.out_video else None
@@ -118,15 +138,31 @@ def main():
         sentence = describe(entries, rel, mount)
         log.write(json.dumps(dict(track=tr.id, t=t, entries=entries, raw=raw,
                                   mount=mount, rel=rel, q=tr.best_q, info=tr.best_info,
-                                  said=sentence)) + "\n"); log.flush()
+                                  attempt=tr.attempts, said=sentence)) + "\n"); log.flush()
         chat.sign_result(tr, t, sentence, entries, mount)
         if sentence:
             speaker.say(sentence)
 
     def submit(tr, t):
+        nonlocal sent_to_vlm
+        check = None
+        if sign_filter:
+            keep, reason, ocr_text = sign_filter(tr.best_crop)
+            check = dict(keep=keep, reason=reason, ocr=ocr_text)
+            flog.write(json.dumps(dict(track=tr.id, t=t, attempt=tr.attempts, q=tr.best_q,
+                                       ms=round(sign_filter.last_ms, 1), **check)) + "\n")
+            flog.flush()
+            if not keep:
+                name = re.sub(r"[^0-9A-Za-z.+-]+", "_", reason)   # also safe on Windows
+                cv2.imwrite(os.path.join(rejected_dir, f"track{tr.id:04d}_a{tr.attempts}_{name}.jpg"),
+                            tr.best_crop)
+                tracker.reject(tr, reason)
+                chat.sign_filtered(tr, t, reason, ocr_text)
+                return
+        sent_to_vlm += 1
         pending[pool.submit(reader, tr.best_crop)] = tr
         cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), tr.best_crop)
-        chat.sign_pending(tr, t)
+        chat.sign_pending(tr, t, check["reason"] if check else None)
 
     frame = None
     for frame in video_frames(a.source, camera, imu, a.fps):
@@ -178,6 +214,11 @@ def main():
             video.write(video.compose(scene, chat))
     if video:
         video.close()
+    summary = dict(boxes_dropped_by_distractor_label=detector.dropped, sent_to_vlm=sent_to_vlm,
+                   **({f"filter_{k}": v for k, v in sign_filter.stats.items()} if sign_filter else {}))
+    with open(os.path.join(a.debug_dir, "summary.json"), "w") as f:
+        json.dump(summary, f, indent=1)
+    print("[summary] " + "  ".join(f"{k}={v}" for k, v in summary.items()))
     while not speaker.q.empty():
         time.sleep(0.2)
     time.sleep(3.0)  # let the last sentence finish

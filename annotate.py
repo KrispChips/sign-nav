@@ -37,11 +37,18 @@ class ChatLog:
     def __init__(self):
         self.items, self._by_track = [], {}
 
-    def sign_pending(self, tr, t):
-        item = dict(t=t, color=WAIT_COL, title=f"Sign #{tr.id}", status="reading...",
-                    lines=[], thumb=tr.best_crop.copy())
+    def sign_pending(self, tr, t, check=None):
+        title = f"Sign #{tr.id}" + (f" (retry {tr.attempts})" if tr.attempts > 1 else "")
+        item = dict(t=t, color=WAIT_COL, title=title, status="reading...",
+                    lines=[], thumb=tr.best_crop.copy(), check=check)
         self._by_track[tr.id] = item
         self.items.append(item)
+
+    def sign_filtered(self, tr, t, reason, ocr_text):
+        """Not sent to Gemma. Kept small: there can be many of these."""
+        self.items.append(dict(t=t, color=MUTED, title=f"Filtered #{tr.id}", status=reason,
+                               lines=[f"OCR: {ocr_text}"] if ocr_text else [],
+                               thumb=tr.best_crop.copy(), thumb_h=40))
 
     def sign_result(self, tr, t, sentence, entries, mount, error=None):
         item = self._by_track.get(tr.id)
@@ -53,7 +60,8 @@ class ChatLog:
             return
         item.update(color=SIGN_COL if entries else MUTED,
                     status=f"read, {mount}" if entries else "nothing legible")
-        item["lines"] = ([f"“{sentence}”"] if sentence else []) + [
+        item["lines"] = ([f"“{sentence}”"] if sentence else []) + (
+            [f"filter: {item['check']}"] if item.get("check") else []) + [
             f"• {e['text']}" + ("" if e["arrow"] == "none" else f"  (arrow: {e['arrow']})")
             for e in entries]
 
@@ -92,7 +100,7 @@ def render_panel(log, width, height):
         thumb = None
         if item.get("thumb") is not None:
             th = item["thumb"]
-            s = min(inner / th.shape[1], 90 / th.shape[0], 2.0)
+            s = min(inner / th.shape[1], item.get("thumb_h", 90) / th.shape[0], 2.0)
             thumb = Image.fromarray(cv2.cvtColor(
                 cv2.resize(th, (max(1, int(th.shape[1] * s)), max(1, int(th.shape[0] * s)))),
                 cv2.COLOR_BGR2RGB))
@@ -123,9 +131,11 @@ def draw_scene(image, tracks, inter, t, info, flash=None, height=720):
     vis = cv2.resize(image, (int(round(image.shape[1] * s)), height), interpolation=cv2.INTER_AREA)
     for tr in tracks:
         x1, y1, x2, y2 = [int(v * s) for v in tr.box]
-        col = GREEN if tr.submitted else ORANGE
+        rejected = not tr.submitted and tr.rejected_q is not None
+        col = GREEN if tr.submitted else RED if rejected else ORANGE
         cv2.rectangle(vis, (x1, y1), (x2, y2), col, 2)
-        cv2.putText(vis, f"#{tr.id} q={tr.best_q:.2f}", (x1, max(15, y1 - 6)),
+        cv2.putText(vis, f"#{tr.id} " + ("filtered" if rejected else f"q={tr.best_q:.2f}"),
+                    (x1, max(15, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
     w = vis.shape[1]
     cv2.rectangle(vis, (0, 0), (w, 30), (0, 0, 0), -1)
