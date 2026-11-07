@@ -71,6 +71,14 @@ class LegibilityModel:
         """Accuracy floor for this angle (linear between bins), else the global one."""
         return self._linear(angle, "floor", self.floor)
 
+    @property
+    def pictograms_calibrated(self) -> bool:
+        """Whether the no-text (pictogram) fallback was fitted on symbol-only signs. If not,
+        a sign with no detected text is never read: on text signs that fallback fired on far
+        signs whose text simply wasn't detectable yet."""
+        pic = self.meta.get("pictogram", {})
+        return bool(pic) and "note" not in pic
+
     def no_text_threshold(self, angle: float) -> float:
         """Sign size needed before a sign WITHOUT detected text is read (as a pictogram):
         the pictogram threshold, but never before text signs would have shown their text."""
@@ -119,10 +127,7 @@ class LegibilityModel:
         if self.blocked_by_angle(m):
             return BLOCKED
         if self.uses_text(m):
-            # Under the floor the number is unreliable, but the text is at most about that
-            # big: use the floor, so the ratio is an underestimate rather than noise.
-            floor = self.floor_at(m.angle)
-            h = m.h_p25 if m.h_p25 >= floor else floor
+            h = m.h_p25   # the floors are reported by calibration, not used here
             ratio = self.h_star(m.angle) * factor / max(h, 1e-6)
         else:
             ratio = self.no_text_threshold(m.angle) * factor / max(m.sign_px, 1e-6)
@@ -132,9 +137,11 @@ class LegibilityModel:
         if self.blocked_by_angle(m):
             return False
         if self.uses_text(m):
-            if m.h_p25 < self.floor_at(m.angle):   # detected but too small to trust
-                return False
+            # The floor never vetoes a read: on real signs the live estimate is noisy at every
+            # height, which pushed the fitted floor far above the threshold and blocked all reads.
             return m.h_p25 >= self.h_star(m.angle) * factor
+        if not self.pictograms_calibrated:
+            return False      # no text seen and no pictogram calibration: keep approaching
         return m.sign_px >= self.no_text_threshold(m.angle) * factor
 
     def steps_closer(self, m: Measurement, d_now: float, step_len: float = 0.7,

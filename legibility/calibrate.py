@@ -559,6 +559,10 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
                 h_star = math.exp((logit(min(0.99, base + max_excess)) - ha) / hb)
                 at, raised = float(sigmoid(ha + hb * math.log(h_star))), True
             above = [cc for h, cc in ent if h >= h_star]
+            # The floor only shapes guidance below the threshold: it never sits above it.
+            res["accuracy_floor_raw"] = res["floor_true"]
+            res["floor_true"] = min(res["floor_true"], h_star)
+            res["floor"] = res["floor_true"] * ratio
             res.update(h_star_true=h_star, h_star=h_star * ratio,
                        text_accuracy_above_h_star=float(np.mean(above)) if above else None,
                        accuracy_above_h_star=float(np.mean(above)) if above else None,

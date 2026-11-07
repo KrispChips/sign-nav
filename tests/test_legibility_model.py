@@ -75,7 +75,7 @@ def test_blocked_by_angle(model):
 
 def test_floor_and_fallback(model):
     assert not model.is_legible(M(h=4.0))                    # detected but under the floor
-    assert model.scale_needed(M(h=4.0)) == pytest.approx(15.0 / 6.0)   # uses the floor
+    assert model.scale_needed(M(h=4.0)) == pytest.approx(15.0 / 4.0)
     assert model.is_legible(M(h=None, sign_px=45))           # no text: pictogram fallback
     assert not model.is_legible(M(h=None, sign_px=20))
     assert model.scale_needed(M(h=None, sign_px=20)) == pytest.approx(2.0)
@@ -207,3 +207,17 @@ def test_waits_while_text_lines_are_still_appearing(model):
     assert t.update(m).action != READ          # 1 sighting without growth
     m = M(h=30.0); m.n_lines = 4
     assert t.update(m).action == READ          # 2 without growth: settled
+
+
+def test_floor_never_blocks_a_read_above_threshold():
+    c = {**CALIB, "estimator": {"floor": 165.0}}      # noisy estimator -> huge raw floor
+    m = LegibilityModel.from_dict(c)
+    assert m.is_legible(M(h=16.0)) and not m.is_legible(M(h=14.0))
+    assert m.scale_needed(M(h=5.0)) == pytest.approx(3.0)    # measured height, not the floor
+
+
+def test_no_text_reads_need_a_pictogram_calibration():
+    c = {**CALIB, "pictogram": {"sign_px_star": 60.0, "note": "not enough symbol-only data"}}
+    m = LegibilityModel.from_dict(c)
+    assert not m.is_legible(M(h=None, sign_px=500))
+    assert m.scale_needed(M(h=None, sign_px=30)) == pytest.approx(2.0)    # still guides
