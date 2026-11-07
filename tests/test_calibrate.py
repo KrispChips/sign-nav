@@ -129,11 +129,15 @@ def test_dataset_boxes_are_centre_based():
     assert crop_box(im, [10, 10, 40, 40]).shape[:2] == (30, 30)     # clipped at the edge
 
 
-def test_entries_unreadable_up_close_stay_out_of_the_curve():
+def test_threshold_is_relative_to_the_plateau():
+    """A reader that tops out at 80%: the threshold is where it reaches 90% of that (72%),
+    not where a plain curve would reach 90% (never)."""
+    rnd = np.random.default_rng(1)
     rows = synthetic_rows({0: 12.0})
-    for r in rows:   # a second entry the reader never gets, at any size
-        r["entries"].append({"h": r["entries"][0]["h"], "correct": False})
+    for r in rows:
+        r["entries"][0]["correct"] = bool(r["entries"][0]["correct"] and rnd.random() < 0.8)
     calib, _ = fit(rows)
     a0 = calib["angles"][0]
-    assert a0["n_unreadable_up_close"] > 0
-    assert a0["h_star_true"] == pytest.approx(12.0, rel=0.15)    # not dragged up or blocked
+    assert not a0["blocked"]
+    assert a0["curve"]["plateau"] == pytest.approx(0.8, abs=0.06)
+    assert a0["h_star_true"] == pytest.approx(12.0, rel=0.2)

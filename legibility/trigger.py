@@ -10,6 +10,10 @@ Rules:
 - guidance uses the median of the last 3 sightings (single frames are noisy);
 - READ fires when the sign is legible in 2 of the last 3 sightings, the latest sighting is
   sharp enough, and the (median) angle isn't blocked;
+- and the number of text lines hasn't grown for `settle` sightings: while new lines are still
+  appearing, smaller text is still emerging and the height comes from the larger lines that
+  survive the distance (on SiGNgapore2D, text accuracy at the same measured height was
+  0.40-0.46 with lines still missing vs 0.56-0.65 with all lines visible);
 - after a failed read (the step 1 OCR cross-check failed, or nothing came back), this sign's
   threshold is raised x1.3 and the history is cleared, so the next read needs new, closer
   sightings: this adapts to odd fonts or poor contrast without touching the calibration;
@@ -53,10 +57,13 @@ def smoothed(history) -> Measurement:
 class ReadTrigger:
     def __init__(self, model: LegibilityModel, window: int = 3, need: int = 2,
                  min_sharpness: Optional[float] = None, max_reads: int = 3,
-                 raise_factor: float = 1.3, max_failed: int = 2):
+                 raise_factor: float = 1.3, max_failed: int = 2, settle: Optional[int] = None):
         self.model, self.need = model, need
         self.min_sharpness = model.min_sharpness if min_sharpness is None else min_sharpness
         self.max_reads, self.raise_factor, self.max_failed = max_reads, raise_factor, max_failed
+        self.settle = (model.meta.get("trigger", {}).get("settle_sightings", 2) if settle is None
+                       else settle)
+        self.max_lines, self.since_growth = 0, 0
         self.history: deque = deque(maxlen=window)
         self.factor = 1.0          # this sign's threshold multiplier
         self.reads = self.failed = 0
@@ -67,6 +74,10 @@ class ReadTrigger:
         if self.state:
             return Decision(self.state, reason="finished")
         self.history.append(m)
+        if m.n_lines > self.max_lines:
+            self.max_lines, self.since_growth = m.n_lines, 0
+        else:
+            self.since_growth += 1
         if self.pending:
             return Decision(WAIT, reason="read in progress")
         sm = smoothed(self.history)
@@ -76,6 +87,8 @@ class ReadTrigger:
         legible = sum(self.model.is_legible(x, self.factor) for x in self.history)
         if legible < self.need:
             return Decision(APPROACH, k, f"legible in {legible}/{len(self.history)} sightings")
+        if self.since_growth < self.settle:
+            return Decision(WAIT, k, f"text lines still appearing ({m.n_lines})")
         if m.sharpness < self.min_sharpness:
             return Decision(WAIT, k, f"too blurred ({m.sharpness:.0f} < {self.min_sharpness:.0f})")
         if self.reads >= self.max_reads:

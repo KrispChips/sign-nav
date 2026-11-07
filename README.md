@@ -202,12 +202,31 @@ python -m legibility.calibrate fit --samples calib_runs\v1\samples.jsonl --out l
 # test 6: 20 simulated approaches with Gemma
 python -m legibility.simulate --calib legibility_calib.json --gt data\SiGNgapore2D\gt_annotation.json --images data\SiGNgapore2D\images --reader gemma --signs 20 --out sim_runs\v1
 ```
-`fit` prints the thresholds per angle, the accuracy above each, the hallucination rate there
-(and its baseline), both floors and the estimator error, and saves
-`legibility_accuracy.png`, `legibility_estimator.png`, `legibility_pictogram.png` next to the
-JSON. If simulated final recall comes out under 90%, refit with `--target 0.95` (in the dry
-run below that moved recall from 78% to 84%) and simulate again; the simulation also prints the
-reader's ceiling (recall at the closest view), which bounds what any trigger can reach.
+`fit` prints, per angle, Gemma's plateau (the share of text it reads even when big), the
+threshold in true and live pixels, text accuracy above it, the hallucination rate there (and
+its baseline), and arrow accuracy; plus both floors and the estimator error. Plots are saved
+next to the JSON. `--target` is a fraction of the plateau (default 0.9: the threshold is where
+getting closer stops paying off). The simulation reports final recall against the reader's
+own ceiling at the closest view, for text and for text + arrow.
+
+What the first real run (80 signs, 1615 Gemma reads) showed, and what changed because of it:
+- SiGNgapore2D boxes are [centre x, centre y, w, h]; crops were offset until fixed.
+- Gemma 4 E4B reads ~80-85% of annotated text even when it is large, so a fixed 90% target
+  blocked every angle. Thresholds are now relative to the fitted plateau.
+- Arrow errors (left/right swaps, "up" read as "right") don't shrink with size: ~60% of arrows
+  right when the text is read. Legibility is fitted on text; arrows are reported separately
+  and need their own fix (prompt / arrow handling), not a closer view.
+- Most "hallucinations" were formatting ("TE 14"), partial reads or real unannotated text. An
+  entry is now invented only if it is unrelated to every annotation.
+- Live `h_p25` overstates legibility while small lines haven't been detected yet (the larger
+  lines survive the distance): at the same measured height, text accuracy was 0.40-0.46 with
+  lines still missing vs 0.56-0.65 with all lines visible. The trigger now waits until the
+  line count stops growing, and the live-unit conversion uses only all-lines-visible samples.
+  The estimator is still the weakest part (~39% median error with all lines visible).
+- The "box taller than 85% of the sign" filter only applies to signs under 48 px: many
+  dataset boxes are drawn tightly around one line, whose text really is sign-height.
+- Thresholds from that run (text): 0 deg 23 px, 30 deg 29 px, 50 deg 33 px, 70 deg 58 px (true
+  height); plateau 75-86%; hallucination at threshold 3-4% vs baseline 0.2-1.3%.
 
 Dry run without Gemma or the dataset (OCR stand-in reader, rendered signs; output is marked
 `dry_run` and is NOT a calibration): `--synthetic 12 --reader ocr` on `run`, then `fit` and

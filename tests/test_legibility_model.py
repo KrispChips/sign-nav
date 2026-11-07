@@ -195,3 +195,15 @@ def test_no_text_fallback_waits_until_text_would_show():
     assert not m.is_legible(M(h=None, sign_px=100))     # pictogram threshold (40) alone would say yes
     assert m.is_legible(M(h=None, sign_px=160))
     assert m.scale_needed(M(h=None, sign_px=75)) == pytest.approx(2.0)
+
+
+def test_waits_while_text_lines_are_still_appearing(model):
+    """Same height, but new lines keep showing up: smaller text is still emerging."""
+    t = ReadTrigger(model)
+    for n in (1, 2, 3, 4):
+        m = M(h=30.0); m.n_lines = n
+        assert t.update(m).action != READ
+    m = M(h=30.0); m.n_lines = 4
+    assert t.update(m).action != READ          # 1 sighting without growth
+    m = M(h=30.0); m.n_lines = 4
+    assert t.update(m).action == READ          # 2 without growth: settled

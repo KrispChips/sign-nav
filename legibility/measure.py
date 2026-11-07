@@ -18,9 +18,10 @@ half-maximum points. On rendered signs this tracks the true height within 10% fr
 blurred or not. The raw box statistic is kept as h_box_p25 for comparison in calibration.
 Always get the engine from signfilter.ocr_engine(): calibration and live use must match.
 
-Boxes taller than 85% of the sign are dropped: when text is too small to resolve, the
-detector sometimes returns one box around the whole sign, which would make a far sign look
-MORE legible than a near one.
+On SMALL signs (under 48 px) boxes taller than 85% of the sign are dropped: when text is too
+small to resolve, the detector sometimes returns one box around the whole sign, which would
+make a far sign look MORE legible than a near one. Larger signs keep them: SiGNgapore2D has
+many boxes drawn tightly around one line of text, whose text really is ~sign-height.
 
 Why detection only, and not the filter's boxes: with recognition on, RapidOCR drops lines it
 can't read with confidence, and at a distance those are exactly the lines being measured."""
@@ -100,12 +101,16 @@ def line_height(gray, quad) -> Optional[float]:
     return float(bottom - top)
 
 
+SMALL_SIGN_PX = 48
+
+
 def measure(crop, info: dict, engine=None, min_px: float = 2.0,
             max_frac_of_sign: float = 0.85) -> Measurement:
     """`info` is rectify()'s dict (needs v_scale, frontality, sharpness, height_px, aspect)."""
     src = to_source_scale(crop, float(info.get("v_scale", 1.0)))
     sign_h = float(info.get("height_px", src.shape[0]))
-    boxes = [q for q in detect_boxes(src, engine) if box_height(q) <= max_frac_of_sign * sign_h]
+    boxes = [q for q in detect_boxes(src, engine)
+             if sign_h >= SMALL_SIGN_PX or box_height(q) <= max_frac_of_sign * sign_h]
     box_hs = [box_height(q) for q in boxes]
     gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if src.ndim == 3 else src
     heights = sorted(h for h in (line_height(gray, q) for q in boxes) if h and h >= min_px)

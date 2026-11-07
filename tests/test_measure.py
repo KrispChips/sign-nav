@@ -95,13 +95,22 @@ class FakeEngine:
         return type("R", (), {"boxes": self.boxes})()
 
 
-def test_whole_sign_box_is_not_a_text_line():
-    img = np.full((60, 200, 3), 240, np.uint8)
-    cv2.putText(img, "EXIT", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-    whole = [[0, 0], [200, 0], [200, 60], [0, 60]]
-    line = [[15, 18], [90, 18], [90, 46], [15, 46]]
-    m = measure(img, dict(frontal_info(img), height_px=60), FakeEngine([whole, line]))
-    assert m.n_lines == 1 and m.h_p25 < 30
+def test_whole_sign_box_is_not_a_text_line_on_a_small_sign():
+    img = np.full((40, 120, 3), 240, np.uint8)
+    cv2.putText(img, "EXIT", (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    whole = [[0, 0], [120, 0], [120, 40], [0, 40]]
+    line = [[8, 12], [60, 12], [60, 32], [8, 32]]
+    m = measure(img, dict(frontal_info(img), height_px=40), FakeEngine([whole, line]))
+    assert m.n_lines == 1 and m.h_p25 < 20
+
+
+def test_sign_height_text_kept_on_a_large_sign():
+    """SiGNgapore2D often boxes a single line tightly: its text really is ~sign-height."""
+    img = np.full((60, 260, 3), 240, np.uint8)
+    cv2.putText(img, "EXIT", (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 1.9, (0, 0, 0), 5)
+    tall = [[2, 2], [180, 2], [180, 58], [2, 58]]
+    m = measure(img, dict(frontal_info(img), height_px=60), FakeEngine([tall]))
+    assert m.n_lines == 1 and m.h_p25 > 30
 
 
 def test_line_height_ignores_blur(engine):

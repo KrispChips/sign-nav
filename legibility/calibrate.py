@@ -22,6 +22,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -39,7 +40,7 @@ from entries import canonical_arrow, normalize  # noqa: E402
 from legibility.degrade import degrade, log_scales, sample_params, sight, stable_seed  # noqa: E402
 from legibility.measure import box_height, line_height  # noqa: E402
 
-TARGET_ACCURACY = 0.90
+TARGET_ACCURACY = 0.90        # fraction of the reader's plateau (see fit())
 MAX_EXCESS_HALLUCINATION = 0.03
 TEXT_MATCH = 90            # fuzzy score for "read correctly" (step 1 normalizer first)
 LABEL_KEYS = {"text labels": "text", "mixed": "text", "symbol labels": "symbol"}
@@ -126,9 +127,32 @@ class TruthFinder:
 
 # ============================================================== Part D: scoring reads
 
+def _canon(text):
+    """Step 1 normalizer (which also drops accents: "CAFÉ" = "CAFE")."""
+    return normalize(text).text
+
+
 def text_score(a, b):
-    na, nb = normalize(a).text, normalize(b).text
-    return max(fuzz.ratio(na, nb), fuzz.token_sort_ratio(na, nb))
+    """Same entry? Also compares with spaces removed, so "TE 14" = "TE14"."""
+    na, nb = _canon(a), _canon(b)
+    return max(fuzz.ratio(na, nb), fuzz.token_sort_ratio(na, nb),
+               fuzz.ratio(na.replace(" ", ""), nb.replace(" ", "")))
+
+
+RELATED = 75      # below this a returned entry is unrelated to every annotation: invented
+
+
+def is_invented(out_text, gt):
+    """Hallucination = a returned entry unrelated to ANY annotated entry. Partial reads ("Bus
+    Stop" for "BUS STOP 2"), formatting ("TE 14") and garbled-but-real text ("Pasar Ribs")
+    are not inventions; bare arrows and symbols are skipped. Real but unannotated text still
+    counts, which is why the fit compares against each angle's baseline."""
+    o = _canon(out_text)
+    if not re.search(r"[A-Z0-9]", o):
+        return False
+    rel = max((max(fuzz.partial_ratio(o, _canon(g)), fuzz.token_set_ratio(o, _canon(g))) for g, _ in gt),
+              default=0)
+    return rel < RELATED
 
 
 def symbol_score(a, b):
@@ -162,7 +186,8 @@ def score_read(gt, out, symbols=False, ignore_arrows=False):
         if best >= TEXT_MATCH:
             wrong_arrow += 1
     halluc = sum(1 for oi, o in enumerate(out) if oi not in used_o
-                 and max((sim(g[0], o.get("text", "")) for g in gt), default=0) < TEXT_MATCH)
+                 and max((sim(g[0], o.get("text", "")) for g in gt), default=0) < TEXT_MATCH
+                 and (symbols or is_invented(o.get("text", ""), gt)))
     return correct, halluc, wrong_arrow
 
 
@@ -260,6 +285,7 @@ def run_experiment(signs, reader, out_dir, angles, scales, variants=1, stop_afte
                             cached += 1
                         correct, halluc, wrong_arrow = score_read(gt, entries, kind == "symbol",
                                                                    reader.ignore_arrows)
+                        tcorrect = score_read(gt, entries, kind == "symbol", True)[0]
                         recalls.append(sum(correct) / len(gt))
                         row = {
                             "sign": sign["id"], "kind": kind, "angle": angle, "scale": s,
@@ -271,6 +297,7 @@ def run_experiment(signs, reader, out_dir, angles, scales, variants=1, stop_afte
                             "entries": [{"text": t, "arrow": a, "correct": c,
                                          "h": eh * s if eh else None}
                                         for (t, a), c, eh in zip(gt, correct, tr["entry_h"])],
+                            "text_correct": tcorrect,
                             "n_out": len(entries), "hallucinated": halluc, "wrong_arrow": wrong_arrow,
                             "read": entries, "reader": reader.tag, "dry_run": reader.dry_run,
                         }
@@ -374,27 +401,81 @@ def _relation(pairs):
     return float(c), float(d)
 
 
-def readable_up_close(rows):
-    """Per sign, the entries the reader got right at its closest, most head-on view. Entries it
-    misses even there (circled-number "PLATFORM 5" annotations, stylized lettering, text the
-    reader just doesn't return) aren't a distance problem: walking closer can't fix them, so
-    they stay out of the accuracy curve instead of dragging it down at every height."""
-    best = {}
+def text_correct(r):
+    """Per annotated entry: was its TEXT read (arrow ignored)? Legibility is about text: on
+    real signs Gemma's arrow errors (left/right swaps, 'up' read as 'right') don't shrink as
+    the text gets bigger, so they are reported separately instead of bending the curve."""
+    if "text_correct" in r:
+        return r["text_correct"]
+    if "read" not in r:   # rows from another source without the raw read: use their scoring
+        return [e["correct"] for e in r["entries"]]
+    gt = [(e["text"], e["arrow"]) for e in r["entries"]]
+    return score_read(gt, r.get("read", []), symbols=r["kind"] == "symbol", ignore_arrows=True)[0]
+
+
+def hallucinated(r):
+    """Invented entries in a row's read, under the current definition (rescored from the
+    stored read, so older samples files are judged the same way)."""
+    if "read" not in r:
+        return r["hallucinated"]
+    gt = [(e["text"], e["arrow"]) for e in r["entries"]]
+    return score_read(gt, r["read"], symbols=r["kind"] == "symbol", ignore_arrows=True)[1]
+
+
+def fit_plateau(x, y, grid=np.linspace(0.3, 1.0, 71)):
+    """P(correct) = c * sigmoid(a + b x), by profile likelihood over the plateau c. The reader
+    tops out below 100% even on big text (about 80-85% for Gemma 4 E4B on SiGNgapore2D), so
+    a plain logistic, which must reach 1, mis-places the threshold."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    J = np.column_stack([np.ones_like(x), x])
+    best = None
+    for c in grid:
+        w = np.array([0.0, 1.0])
+        for _ in range(80):
+            sg = sigmoid(w[0] + w[1] * x)
+            p = np.clip(c * sg, 1e-6, 1 - 1e-6)
+            dp = c * sg * (1 - sg)
+            grad = J.T @ ((y / p - (1 - y) / (1 - p)) * dp)
+            curv = (y / p ** 2 + (1 - y) / (1 - p) ** 2) * dp ** 2
+            step = np.linalg.solve(J.T @ (J * curv[:, None]) + 1e-3 * np.eye(2), grad)
+            w += step
+            if np.abs(step).max() < 1e-7:
+                break
+        p = np.clip(c * sigmoid(w[0] + w[1] * x), 1e-6, 1 - 1e-6)
+        ll = float(np.sum(y * np.log(p) + (1 - y) * np.log(1 - p)))
+        if best is None or ll > best[0]:
+            best = (ll, float(c), float(w[0]), float(w[1]))
+    return best[1:]
+
+
+def complete_flags(rows):
+    """Per row: did it show at least as many text lines as the same sign and angle at its
+    largest scale? While lines are still missing, the measured height comes from the larger
+    lines that survive the distance and overstates legibility (the read trigger waits for the
+    line count to settle for the same reason)."""
+    ref = {}
     for r in rows:
-        key = (r["angle"], -r["scale"])
-        if r["sign"] not in best or key < best[r["sign"]][0]:
-            best[r["sign"]] = (key, r)
-    return {s: {i for i, e in enumerate(r["entries"]) if e["correct"]} for s, (_, r) in best.items()}
+        k = (r["sign"], r["angle"])
+        if k not in ref or r["scale"] > ref[k][0]:
+            ref[k] = (r["scale"], r["live"].get("n_lines", 0))
+    return [r["live"].get("n_lines", 0) >= ref[(r["sign"], r["angle"])][1] for r in rows]
+
+
+MIN_PLATEAU = 0.4     # below this the angle itself costs most of the reads: face the sign
 
 
 def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
+    """`target` is a fraction of the reader's plateau: the threshold is where text accuracy
+    reaches target * plateau, i.e. where getting closer stops paying off."""
     text = [r for r in rows if r["kind"] == "text"]
-    readable = readable_up_close(text)
     symbol = [r for r in rows if r["kind"] == "symbol"]
-    out = {"version": 1, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+    tcorr = {id(r): text_correct(r) for r in rows}
+    complete = {id(r): f for r, f in zip(text, complete_flags(text))}
+    out = {"version": 2, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
            "reader": sorted({r["reader"] for r in rows}),
            "dry_run": any(r.get("dry_run") for r in rows),
-           "settings": {"target_accuracy": target, "max_excess_hallucination": max_excess,
+           "settings": {"target_fraction_of_plateau": target, "max_excess_hallucination": max_excess,
+                        "scored_on": "text (arrows reported separately)",
                         "measure": "h_p25 of FWHM line heights, source px",
                         "ocr_side_len": 320},
            "n_samples": len(rows), "n_signs": len({r["sign"] for r in rows}),
@@ -408,59 +489,68 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
     # stop tracking the truth within 20%; the model only trusts measurements above it.
     det_floor, det_bins = _detection_floor(pairs)
     floor_true = _accuracy_floor(pairs) or det_floor or 8.0
-    good = [(t, l) for t, l in pairs if t and l and t >= 8.0]      # the acceptance range
-    ratios = np.array([l / t for t, l in good]) if good else np.array([1.0])
-    med_ratio = float(np.median(ratios))
-    out["estimator"] = {
-        "floor_true": floor_true, "floor": floor_true * med_ratio,
-        "detection_floor_true": det_floor,
-        "median_ratio": med_ratio,
-        "median_abs_rel_error": float(np.median(np.abs(ratios - 1))),
-        "p90_abs_rel_error": float(np.percentile(np.abs(ratios - 1), 90)),
-        "within_20pct": float(np.mean(np.abs(ratios - 1) <= 0.20)),
-        "n": len(good), "detection_bins": det_bins,
-    }
+
+    def ratio_stats(ps):
+        rr = np.array([l / t for t, l in ps if t and l and t >= 8.0])
+        if not len(rr):
+            rr = np.array([1.0])
+        return {"median_ratio": float(np.median(rr)),
+                "median_abs_rel_error": float(np.median(np.abs(rr - 1))),
+                "p90_abs_rel_error": float(np.percentile(np.abs(rr - 1), 90)),
+                "within_20pct": float(np.mean(np.abs(rr - 1) <= 0.20)), "n": int(len(rr))}
+    all_stats = ratio_stats(pairs)
+    comp_pairs = [(r["truth"]["h_p25"], r["live"]["h_p25"]) for r in text if complete[id(r)]]
+    comp_stats = ratio_stats(comp_pairs)
+    med_ratio = comp_stats["median_ratio"]
+    out["estimator"] = dict(all_stats, floor_true=floor_true, floor=floor_true * med_ratio,
+                            detection_floor_true=det_floor, detection_bins=det_bins,
+                            all_lines_visible=comp_stats,
+                            note="live/true ratios for true >= 8 px; 'all_lines_visible' = samples "
+                                 "showing as many lines as at full size (what the trigger reads)")
     plot["estimator"] = {"pairs": pairs, "floor_true": floor_true, "detection_floor_true": det_floor}
 
-    # ---- accuracy curve per angle
+    # ---- accuracy curve per angle (text), plateau-relative threshold
     for angle in sorted({r["angle"] for r in text}):
         rs = [r for r in text if r["angle"] == angle]
-        ent = [(e["h"], e["correct"]) for r in rs for i, e in enumerate(r["entries"])
-               if e["h"] and i in readable.get(r["sign"], ())]
-        dropped = sum(1 for r in rs for i, e in enumerate(r["entries"])
-                      if e["h"] and i not in readable.get(r["sign"], ()))
-        res = {"angle": angle, "n_entries": len(ent), "n_unreadable_up_close": dropped, "blocked": False}
-        # The detector loses squeezed (oblique) text sooner, so the floor is per angle too.
+        ent = [(e["h"], c) for r in rs for e, c in zip(r["entries"], tcorr[id(r)]) if e["h"]]
+        res = {"angle": angle, "n_entries": len(ent), "blocked": False}
         a_pairs = [(r["truth"]["h_p25"], r["live"]["h_p25"]) for r in rs]
+        a_comp = [(r["truth"]["h_p25"], r["live"]["h_p25"]) for r in rs if complete[id(r)]]
+        ratio = ratio_stats(a_comp)["median_ratio"] if a_comp else med_ratio
+        res["live_ratio"] = ratio
         res["floor_true"] = _accuracy_floor(a_pairs) or floor_true
-        res["floor"] = res["floor_true"] * med_ratio
+        res["floor"] = res["floor_true"] * ratio
         res["detection_floor_true"] = _detection_floor(a_pairs)[0]
         # "No text found" only means "no text" once text would have been found: the sign size
         # at which text signs' text is detected 90% of the time. The no-text (pictogram)
         # fallback waits for at least this size, so far text signs don't trigger it.
         sp = [(r["truth"]["sign_px"], r["live"]["h_p25"]) for r in rs]
         nt_true = _detection_floor(sp)[0]
-        ratio = float(np.median([r["live"]["sign_px"] / r["truth"]["sign_px"] for r in rs])) if rs else 1.0
-        res["no_text_sign_px"] = nt_true * ratio if nt_true else None
+        sratio = float(np.median([r["live"]["sign_px"] / r["truth"]["sign_px"] for r in rs])) if rs else 1.0
+        res["no_text_sign_px"] = nt_true * sratio if nt_true else None
+        # arrows, reported separately: of the entries whose text was read, how many arrows were right
+        arrow_ok = [e["correct"] for r in rs for e, c in zip(r["entries"], tcorr[id(r)]) if e["h"] and c]
+        res["arrow_accuracy_when_text_read"] = float(np.mean(arrow_ok)) if arrow_ok else None
         if len(ent) < 20 or len({c for _, c in ent}) < 2:
             res.update(blocked=True, h_star=None, note="too little data to fit")
             out["angles"].append(res)
             continue
-        a, b = fit_logistic(np.log([h for h, _ in ent]), [c for _, c in ent])
-        res["curve"] = {"a": a, "b": b, "x": "log(true entry height px)"}
+        c, a, b = fit_plateau(np.log([h for h, _ in ent]), [cc for _, cc in ent])
+        res["curve"] = {"plateau": c, "a": a, "b": b, "x": "log(true entry height px)"}
         h_max = max(h for h, _ in ent)
-        top = [c for h, c in ent if h >= h_max / 1.5]
         h_star = math.exp((logit(target) - a) / b) if b > 0 else math.inf
-        if not (h_star <= h_max) or (top and np.mean(top) < target):
+        if c < MIN_PLATEAU or not (h_star <= h_max):
             res.update(blocked=True, h_star=None, h_star_true=None,
-                       note="no observed height reaches the target accuracy: face the sign")
+                       note=f"plateau {c:.2f} < {MIN_PLATEAU}" if c < MIN_PLATEAU
+                       else "threshold beyond the observed heights: face the sign")
         else:
             # hallucination: per returned entry, vs the sign's true p25 height
             hx, hy = [], []
             for r in rs:
                 if r["truth"]["h_p25"] and r["n_out"]:
+                    nh = hallucinated(r)
                     hx += [math.log(r["truth"]["h_p25"])] * r["n_out"]
-                    hy += [1] * r["hallucinated"] + [0] * (r["n_out"] - r["hallucinated"])
+                    hy += [1] * nh + [0] * (r["n_out"] - nh)
             ha, hb = fit_logistic(hx, hy) if len(set(hy)) > 1 else (-10.0, 0.0)
             base = float(sigmoid(ha + hb * max(hx))) if hx else 0.0
             at = float(sigmoid(ha + hb * math.log(h_star)))
@@ -468,11 +558,9 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
             if at - base > max_excess and hb < 0:
                 h_star = math.exp((logit(min(0.99, base + max_excess)) - ha) / hb)
                 at, raised = float(sigmoid(ha + hb * math.log(h_star))), True
-            c, d = _relation([(r["truth"]["h_p25"], r["live"]["h_p25"]) for r in rs
-                              if r["truth"]["h_p25"] and r["truth"]["h_p25"] >= floor_true])
             above = [cc for h, cc in ent if h >= h_star]
-            res.update(h_star_true=h_star, h_star=math.exp(c + d * math.log(h_star)),
-                       live_relation={"c": c, "d": d},
+            res.update(h_star_true=h_star, h_star=h_star * ratio,
+                       text_accuracy_above_h_star=float(np.mean(above)) if above else None,
                        accuracy_above_h_star=float(np.mean(above)) if above else None,
                        hallucination_at_h_star=at, hallucination_baseline=base,
                        raised_for_hallucination=raised,
@@ -480,23 +568,24 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
         out["angles"].append(res)
         plot["angles"][angle] = {"entries": ent, "rows": rs}
 
-    # ---- pictogram fallback
-    ent = [(r["truth"]["sign_px"], e["correct"]) for r in symbol for e in r["entries"]]
+    # ---- pictogram fallback (same plateau-relative rule, on the sign's size)
+    ent = [(r["truth"]["sign_px"], c) for r in symbol for c in tcorr[id(r)]]
     pic = {"n_entries": len(ent)}
     if len(ent) >= 20 and len({c for _, c in ent}) == 2:
-        a, b = fit_logistic(np.log([h for h, _ in ent]), [c for _, c in ent])
+        c, a, b = fit_plateau(np.log([h for h, _ in ent]), [cc for _, cc in ent])
         s_true = math.exp((logit(target) - a) / b) if b > 0 else math.inf
         live_ratio = float(np.median([r["live"]["sign_px"] / r["truth"]["sign_px"] for r in symbol]))
-        pic.update(curve={"a": a, "b": b}, sign_px_star_true=s_true,
+        pic.update(curve={"plateau": c, "a": a, "b": b}, sign_px_star_true=s_true,
                    sign_px_star=s_true * live_ratio if math.isfinite(s_true) else None)
     if not pic.get("sign_px_star"):
         pic.update(sign_px_star=60.0, note="not enough symbol-only data: conservative default")
     out["pictogram"] = pic
     plot["pictogram"] = ent
 
-    # ---- trigger: sharpness that 95% of fully correct reads had
-    sharp = [r["live"]["sharpness"] for r in text if r["entries"] and all(e["correct"] for e in r["entries"])]
-    out["trigger"] = {"min_sharpness": float(np.percentile(sharp, 5)) if len(sharp) >= 20 else 100.0}
+    # ---- trigger: sharpness that 95% of fully read samples had
+    sharp = [r["live"]["sharpness"] for r in text if r["entries"] and all(tcorr[id(r)])]
+    out["trigger"] = {"min_sharpness": float(np.percentile(sharp, 5)) if len(sharp) >= 20 else 100.0,
+                      "settle_sightings": 2}
     return out, plot
 
 
@@ -535,10 +624,13 @@ def make_plots(calib, plot, out_dir):
         mids = [math.sqrt(edges[i] * edges[i + 1]) for i in range(11)]
         acc = [cs[(hs >= edges[i]) & (hs < edges[i + 1])].mean() if ((hs >= edges[i]) & (hs < edges[i + 1])).any()
                else np.nan for i in range(11)]
-        ax.plot(mids, acc, "o", color="#1f77b4", label="entry accuracy (binned)")
+        ax.plot(mids, acc, "o", color="#1f77b4", label="text read (binned)")
         if "curve" in res:
             xs = np.geomspace(hs.min(), hs.max(), 100)
-            ax.plot(xs, sigmoid(res["curve"]["a"] + res["curve"]["b"] * np.log(xs)), "-", color="#1f77b4")
+            cv = res["curve"]
+            ax.plot(xs, cv.get("plateau", 1.0) * sigmoid(cv["a"] + cv["b"] * np.log(xs)), "-", color="#1f77b4")
+            ax.axhline(cv.get("plateau", 1.0) * calib["settings"]["target_fraction_of_plateau"],
+                       color="gray", lw=0.8, ls=":")
         if "hallucination_curve" in res:
             xs = np.geomspace(hs.min(), hs.max(), 100)
             hc = res["hallucination_curve"]
@@ -546,9 +638,8 @@ def make_plots(calib, plot, out_dir):
         if res.get("h_star_true"):
             ax.axvline(res["h_star_true"], color="k", lw=1)
             ax.text(res["h_star_true"], 0.05, f" h*={res['h_star_true']:.1f}", fontsize=8)
-        ax.axhline(calib["settings"]["target_accuracy"], color="gray", lw=0.8, ls=":")
     axes[0][0].set_ylabel("probability"); axes[0][0].legend(fontsize=7, loc="center right")
-    fig.suptitle("Entry accuracy vs true text height" + title_note, fontsize=10)
+    fig.suptitle("Text accuracy vs true text height (dotted: threshold level)" + title_note, fontsize=10)
     fig.tight_layout(); p = out_dir / "legibility_accuracy.png"; fig.savefig(p, dpi=120); plt.close(fig); files.append(p)
 
     est = calib["estimator"]
@@ -581,7 +672,7 @@ def make_plots(calib, plot, out_dir):
         pic = calib["pictogram"]
         if "curve" in pic:
             xs = np.geomspace(hs.min(), hs.max(), 100)
-            ax.plot(xs, sigmoid(pic["curve"]["a"] + pic["curve"]["b"] * np.log(xs)), "-")
+            ax.plot(xs, pic["curve"].get("plateau", 1.0) * sigmoid(pic["curve"]["a"] + pic["curve"]["b"] * np.log(xs)), "-")
         ax.set_xlabel("true sign size, shorter side (px)"); ax.set_ylabel("symbol read correctly")
         ax.set_title("Pictogram fallback" + title_note, fontsize=10)
         fig.tight_layout(); p = out_dir / "legibility_pictogram.png"; fig.savefig(p, dpi=120); plt.close(fig); files.append(p)
@@ -645,24 +736,28 @@ def main(argv=None):
 def report(c):
     if c["dry_run"]:
         print("*** DRY RUN (stand-in reader and/or rendered signs): NOT A CALIBRATION ***")
-    e = c["estimator"]
+    e, v = c["estimator"], c["estimator"]["all_lines_visible"]
     det = e.get("detection_floor_true")
-    print(f"estimator (true >= 8 px): median |error| {100 * e['median_abs_rel_error']:.1f}%, within 20%: "
-          f"{100 * e['within_20pct']:.0f}% (n={e['n']}); accuracy floor {e['floor_true']:.1f} px, "
-          f"detection floor {det:.1f} px" if det else "detection floor n/a")
+    print(f"estimator (true >= 8 px): median |error| {100 * e['median_abs_rel_error']:.0f}% all samples, "
+          f"{100 * v['median_abs_rel_error']:.0f}% when all lines visible (within 20%: {100 * v['within_20pct']:.0f}%, "
+          f"n={v['n']}); accuracy floor {e['floor_true']:.1f} px, detection floor "
+          + (f"{det:.1f} px" if det else "n/a"))
     for r in c["angles"]:
+        arrow = r.get("arrow_accuracy_when_text_read")
+        arrow_s = f", arrows right {100 * arrow:.0f}% when text read" if arrow is not None else ""
         if r["blocked"]:
-            print(f"  {r['angle']:>4} deg: BLOCKED ({r.get('note', '')})")
+            print(f"  {r['angle']:>4} deg: BLOCKED ({r.get('note', '')}){arrow_s}")
         else:
-            acc = r.get("accuracy_above_h_star")
-            print(f"  {r['angle']:>4} deg: h* = {r['h_star']:.1f} px live ({r['h_star_true']:.1f} true), "
-                  f"floor {r['floor']:.1f}, "
-                  f"accuracy above h* {100 * acc:.0f}%, hallucination {100 * r['hallucination_at_h_star']:.1f}% "
+            cv = r["curve"]
+            print(f"  {r['angle']:>4} deg: plateau {100 * cv['plateau']:.0f}% text read; threshold "
+                  f"{r['h_star_true']:.1f} px true = {r['h_star']:.1f} px live; text read above it "
+                  f"{100 * r['text_accuracy_above_h_star']:.0f}%; hallucination {100 * r['hallucination_at_h_star']:.1f}% "
                   f"(baseline {100 * r['hallucination_baseline']:.1f}%)"
-                  + (", raised for hallucination" if r["raised_for_hallucination"] else ""))
+                  + (", raised for hallucination" if r["raised_for_hallucination"] else "") + arrow_s)
     p = c["pictogram"]
     print(f"pictogram: sign_px* = {p['sign_px_star']:.1f} px" + (f" ({p['note']})" if p.get("note") else ""))
-    print(f"trigger: min_sharpness {c['trigger']['min_sharpness']:.0f}")
+    print(f"trigger: min_sharpness {c['trigger']['min_sharpness']:.0f}, waits {c['trigger'].get('settle_sightings', 2)} "
+          "sightings without new text lines")
 
 
 if __name__ == "__main__":

@@ -58,7 +58,9 @@ class Normalized:
 def normalize(text: str) -> Normalized:
     """NFKC + upper case, plain hyphens, fillers stripped (and recorded), punctuation dropped
     except - / , & (plus @ and parentheses, which parse_entry uses), OCR digit repair."""
-    t = unicodedata.normalize("NFKC", str(text)).upper()
+    t = unicodedata.normalize("NFKC", str(text))
+    # Drop accents instead of the whole letter ("CAFÉ" -> "CAFE", not "CAF").
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c)).upper()
     t = _DASHES.sub("-", t)
     fillers = []
 

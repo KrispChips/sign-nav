@@ -66,9 +66,11 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
     near_crop, _, _ = sight(near.image, near.box, near.K, engine)
     near_entries, _ = cached_read(reader, cache, near_crop)
     ceiling = sum(score_read(gt, near_entries, symbols, reader.ignore_arrows)[0]) / len(gt)
+    text_ceiling = sum(score_read(gt, near_entries, symbols, True)[0]) / len(gt)
     trig = ReadTrigger(model)
     legible = []   # per sighting, at the base threshold: could the trigger have fired by the end?
     reads, last_recall, final_recall, events = 0, 0.0, None, []
+    last_text, final_text = 0.0, None
     for k, s in enumerate(scales):
         p = sample_params(angle, s, stable_seed("approach", sign["id"], angle, k))
         scene = degrade(full, p)
@@ -85,11 +87,12 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
         ok = cross_check(entries, " ".join(ocr.txts or ()))
         correct, halluc, _ = score_read(gt, entries, symbols, reader.ignore_arrows)
         last_recall = sum(correct) / len(gt)
-        events.append({"step": k, "scale": s, "h_p25": m.h_p25, "ok": ok, "recall": last_recall,
-                       "hallucinated": halluc})
+        last_text = sum(score_read(gt, entries, symbols, True)[0]) / len(gt)
+        events.append({"step": k, "scale": s, "h_p25": m.h_p25, "n_lines": m.n_lines, "ok": ok,
+                       "recall": last_recall, "text_recall": last_text, "hallucinated": halluc})
         res = trig.read_result(ok)
         if ok:
-            final_recall = last_recall
+            final_recall, final_text = last_recall, last_text
         if res.action in (DONE, UNREADABLE):
             break
     blocked = model.blocked_by_angle(m)
@@ -100,6 +103,8 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
             "state": trig.state or ("still approaching" if reads else "never fired"),
             "blocked": blocked, "category": category, "ceiling_recall": ceiling,
             "final_recall": final_recall if final_recall is not None else last_recall,
+            "text_ceiling": text_ceiling,
+            "final_text_recall": final_text if final_text is not None else last_text,
             "events": events}
 
 
@@ -113,6 +118,8 @@ def summarize(results):
             "evaluated": len(ev),
             "mean_final_recall_evaluated": mean([r["final_recall"] for r in ev]),
             "mean_ceiling_recall_evaluated": mean([r["ceiling_recall"] for r in ev]),
+            "mean_final_text_recall_evaluated": mean([r.get("final_text_recall", 0) for r in ev]),
+            "mean_text_ceiling_evaluated": mean([r.get("text_ceiling", 0) for r in ev]),
             "blocked": sum(r["category"] == "blocked" for r in results),
             "out_of_range": sum(r["category"] == "out_of_range" for r in results),
             "states": {s: sum(r["state"] == s for r in results) for s in sorted({r["state"] for r in results})}}
@@ -158,10 +165,13 @@ def main(argv=None):
     (out / "results.json").write_text(json.dumps({"summary": s, "signs": results}, indent=1))
     if s["dry_run"]:
         print("*** DRY RUN: not an acceptance result ***")
-    print(f"mean reads per sign {s['mean_reads']:.2f} (target <= 2); evaluated signs: {s['evaluated']}, "
-          f"final recall {100 * (s['mean_final_recall_evaluated'] or 0):.0f}% (target >= 90%; reader ceiling "
-          f"{100 * (s['mean_ceiling_recall_evaluated'] or 0):.0f}%); blocked {s['blocked']}, "
-          f"out of range {s['out_of_range']}; states {s['states']}")
+    pct = lambda v: 100 * (v or 0)   # noqa: E731
+    print(f"mean reads per sign {s['mean_reads']:.2f} (target <= 2); evaluated signs: {s['evaluated']}\n"
+          f"  text read:      final {pct(s['mean_final_text_recall_evaluated']):.0f}% vs the reader's ceiling "
+          f"{pct(s['mean_text_ceiling_evaluated']):.0f}% at the closest view\n"
+          f"  text + arrow:   final {pct(s['mean_final_recall_evaluated']):.0f}% vs ceiling "
+          f"{pct(s['mean_ceiling_recall_evaluated']):.0f}%\n"
+          f"  blocked {s['blocked']}, out of range {s['out_of_range']}; states {s['states']}")
 
 
 if __name__ == "__main__":
