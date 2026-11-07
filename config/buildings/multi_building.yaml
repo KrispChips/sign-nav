@@ -1,0 +1,13 @@
+# Campus with building-qualified room IDs: 014-100 = building 14, room 100, floor 1.
+# The room regex runs before any range parsing, so "014-100" is one room, not 14 to 100.
+name: multi_building
+room_regex: '(?<![A-Z0-9])(?P<building>\d{3})-(?P<room>\d{3})(?P<suffix>[A-Z])?(?![A-Z0-9])'
+key_groups: [room]
+id_format: '{building:03d}-{room:03d}{suffix}'
+floor:
+  group: room
+  leading_digits: {3: 1}
+ground_floor: 1
+building_regexes:
+  - '\b(?:BUILDING|BLDG|BLD)\s*(?P<building>\d{1,3})\b'
+  - '^(?P<building>\d{3})$'   # a bare "014" on a sign is a building here, not a room

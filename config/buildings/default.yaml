@@ -1,0 +1,14 @@
+# Default numbering: room IDs are 3-4 digits with an optional letter suffix (214, 1204, 214A).
+# Floor = leading digits: one for 3-digit numbers, two for 4-digit (1204 -> floor 12).
+# A "B" prefix means basement: B12 -> floor -1, B204 -> floor -2.
+name: default
+room_regex: '(?<![A-Z0-9])(?P<basement>B)?(?P<number>(?(basement)\d{2,4}|\d{3,4}))(?P<suffix>[A-Z])?(?![A-Z0-9])'
+key_groups: [number]          # compared numerically, so leading zeros don't matter
+id_format: '{basement}{number}{suffix}'
+floor:
+  group: number
+  leading_digits: {2: 1, 3: 1, 4: 2}
+  basement_group: basement
+ground_floor: 1               # what "GROUND" / "G" means
+building_regexes:             # how building numbers are written on signs
+  - '\b(?:BUILDING|BLDG|BLD)\s*(?P<building>\d{1,3})\b'

@@ -20,6 +20,8 @@ undistorted frame ──► Depth Anything V2 (ONNX) ──► farness profile �
 | `direction.py` | bearing, heading, wall-sign arrow mapping | No |
 | `vlm.py` | Gemma via Ollama, JSON output | No |
 | `signfilter.py` | OCR + CLIP check of each track's best crop before Gemma | No |
+| `targets.py`, `entries.py`, `matcher.py`, `facilities.py` | target parser + sign matcher (pure Python) | No |
+| `config/buildings/*.yaml` | room numbering per building | Per building, not per device |
 | `intersection.py` | depth model, farness profile, opening detector (from `geometric_intersection_detection.ipynb`) | No |
 | `main.py` | the loop, TTS, debug logging | No |
 
@@ -92,6 +94,56 @@ Real signs there mean the filter is too strict: lower `--ocr-min-chars` or `--cl
 Distractors reaching Gemma (`track*.jpg`) mean add them to the prompt lists.
 Recall matters more than precision: when in doubt, set the thresholds to keep.
 `--no-clip` runs OCR only, `--no-filter` turns stages 2-3 off.
+
+## Target parser and sign matcher
+
+Given what the user asked for and what the VLM read off a sign: does this sign help, and how?
+Pure Python (no I/O except loading a building config, no ML; `rapidfuzz` for fuzzy text).
+
+```python
+from targets import load_rule, parse_target
+from matcher import Context, match_sign
+
+rule = load_rule("multi_building")                 # config/buildings/multi_building.yaml
+target = parse_target("014-100", rule)             # building 14, room 100, floor 1
+m = match_sign(target, [{"text": "014-100 to 014-150", "arrow": "right"},
+                        {"text": "Building 15", "arrow": "left"}],
+               rule, ocr_text="014-100 TO 014-150 BUILDING 15", context=Context(user_floor=1))
+m.level, m.arrow, m.confidence      # MatchLevel.RANGE, "right", 0.95
+m.contradictions                    # "Building 15" <- left: rules that direction out
+print(m.explain())
+```
+
+- **Targets**: rooms ("room 214", "014-100", "#04-03B"), facilities ("restroom", "exit A"),
+  areas ("zone B"), buildings, floors, or names ("radiology", matched fuzzily against `aliases`).
+- **Entries**: normalized (NFKC, dashes, filler words like ROOM/RM/# stripped when a number
+  follows, OCR digit repair inside mostly-digit tokens only), split on `, & AND / +` (but not
+  when every part is just a name, e.g. "CAR PICKUP/DROPOFF"), then typed in this order:
+  RANGE, ROOM, BUILDING, FLOOR, AREA, FACILITY, NAMED, UNKNOWN. Room IDs are found with the
+  building's regex before looking at connectors, so "014-100" is a room, not 14 to 100.
+- **Levels** (best first): EXACT, RANGE, AREA, BUILDING, FLOOR, NAMED, SUBGOAL (elevator /
+  stairs / escalator when the target is on another floor), NONE. **Contradictions** (a
+  different building, a range on the target's floor without it, a different floor, another
+  zone/wing, EXIT B for EXIT A) are listed separately for routing.
+- **Combining**: best level wins; among ties the narrowest range / closest text is reported,
+  and ties pointing different ways set `ambiguous`. A locational EXACT entry sets `arrived`,
+  a locational BUILDING sets `inside_building`. If the matched text isn't in the OCR text
+  (partial ratio < 80) the confidence is halved: get closer and re-read.
+- **Arrows**: `entries.canonical_arrow()` maps dataset words to the VLM vocabulary
+  (straight -> up, straight-left -> up-left, locational -> none).
+- **Building configs**: `default` (214, 1204 = floor 12, B12 = floor -1), `multi_building`
+  (014-100), `singapore_units` (#04-01, #B1-05). Add one YAML per building.
+
+Tests: `python -m pytest`. Parser and matcher tables, 40 hand-written signs with expected
+results (`tests/data/synthetic_signs.json`), pinned edge cases with the deferred ones skipped
+and explained, and a dataset test on SiGNgapore2D ground truth. The GT isn't copied here (its
+repo has no license file): clone https://github.com/AdaCompNUS/sign-understanding next to this
+repo or set `SIGN_UNDERSTANDING_GT`; without it that test is skipped. Full report:
+`python tests/sg_dataset.py`. Current numbers (205 signs, 1262 entries): UNKNOWN 1.3% (bare
+"1"-"4", "A", "B"), 49/50 hand-labelled types right (the miss: "F01-11 TO F01-33", a unit
+format no config covers yet), self-consistency 100% (1241 targets), 0 false EXACT/RANGE on 553
+negatives. Self-consistency only shows the matcher finds an entry when asked for it; it is
+not a measure of parsing accuracy (that's what the hand labels are for).
 
 ## Annotated video
 

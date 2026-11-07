@@ -1,0 +1,1230 @@
+{
+ "note": "Hand-written signs. Expected results written from what a person would conclude, not from the code's output.",
+ "signs": [
+  {
+   "id": "d01",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Rooms 200-250",
+     "arrow": "left"
+    },
+    {
+     "text": "Rooms 251-299",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "RANGE",
+     "arrow": "left",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "260",
+     "level": "RANGE",
+     "arrow": "right",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "310",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d02",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Room 214",
+     "arrow": "none"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "EXACT",
+     "arrow": "none",
+     "arrived": true
+    },
+    {
+     "target": "216",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d03",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "101-149",
+     "arrow": "left"
+    },
+    {
+     "text": "150-199",
+     "arrow": "right"
+    },
+    {
+     "text": "Elevators",
+     "arrow": "up"
+    }
+   ],
+   "expect": [
+    {
+     "target": "120",
+     "level": "RANGE",
+     "arrow": "left",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "214",
+     "level": "SUBGOAL",
+     "arrow": "up",
+     "user_floor": 1
+    },
+    {
+     "target": "214",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d04",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Odd numbers 101-149",
+     "arrow": "left"
+    },
+    {
+     "text": "Even numbers 100-148",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "123",
+     "level": "RANGE",
+     "arrow": "left",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "124",
+     "level": "RANGE",
+     "arrow": "right",
+     "contradictions": [
+      "range"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d05",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Rooms 200\u2013250 & Restrooms",
+     "arrow": "right"
+    },
+    {
+     "text": "Exit",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "RANGE",
+     "arrow": "right"
+    },
+    {
+     "target": "restroom",
+     "level": "EXACT",
+     "arrow": "right"
+    },
+    {
+     "target": "exit",
+     "level": "EXACT",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d06",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "1200-1250",
+     "arrow": "up"
+    },
+    {
+     "text": "1251-1299",
+     "arrow": "down"
+    }
+   ],
+   "expect": [
+    {
+     "target": "1204",
+     "level": "RANGE",
+     "arrow": "up",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "1260",
+     "level": "RANGE",
+     "arrow": "down",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "204",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d07",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Level 2",
+     "arrow": "up"
+    },
+    {
+     "text": "Level 3",
+     "arrow": "down"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "FLOOR",
+     "arrow": "up",
+     "contradictions": [
+      "floor"
+     ]
+    },
+    {
+     "target": "310",
+     "level": "FLOOR",
+     "arrow": "down",
+     "contradictions": [
+      "floor"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d08",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Rooms 220-250",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "NONE",
+     "arrow": null,
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "230",
+     "level": "RANGE",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d09",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Room 214A",
+     "arrow": "right"
+    },
+    {
+     "text": "Room 214B",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214A",
+     "level": "EXACT",
+     "arrow": "right"
+    },
+    {
+     "target": "214B",
+     "level": "EXACT",
+     "arrow": "left"
+    },
+    {
+     "target": "214C",
+     "level": "RANGE",
+     "arrow": "right",
+     "ambiguous": true
+    }
+   ]
+  },
+  {
+   "id": "d10",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "101, 103, 105",
+     "arrow": "left"
+    },
+    {
+     "text": "107, 109",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "103",
+     "level": "EXACT",
+     "arrow": "left"
+    },
+    {
+     "target": "109",
+     "level": "EXACT",
+     "arrow": "right"
+    },
+    {
+     "target": "111",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d11",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "R0OM 2I4",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "EXACT",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d12",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "200s",
+     "arrow": "right"
+    },
+    {
+     "text": "300s",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "RANGE",
+     "arrow": "right"
+    },
+    {
+     "target": "355",
+     "level": "RANGE",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d13",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Rooms 200-250",
+     "arrow": "left"
+    },
+    {
+     "text": "Rooms 210-220",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "RANGE",
+     "arrow": null,
+     "ambiguous": true
+    },
+    {
+     "target": "230",
+     "level": "RANGE",
+     "arrow": "left",
+     "contradictions": [
+      "range"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d14",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Cafeteria",
+     "arrow": "right"
+    },
+    {
+     "text": "Library",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "NONE",
+     "arrow": null
+    },
+    {
+     "target": "cafeteria",
+     "level": "NAMED",
+     "arrow": "right"
+    },
+    {
+     "target": "library",
+     "level": "NAMED",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d15",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Toilets",
+     "arrow": "left"
+    },
+    {
+     "text": "Lifts",
+     "arrow": "right"
+    },
+    {
+     "text": "Stairs",
+     "arrow": "up"
+    }
+   ],
+   "expect": [
+    {
+     "target": "restroom",
+     "level": "EXACT",
+     "arrow": "left"
+    },
+    {
+     "target": "elevator",
+     "level": "EXACT",
+     "arrow": "right"
+    },
+    {
+     "target": "stairs",
+     "level": "EXACT",
+     "arrow": "up"
+    }
+   ]
+  },
+  {
+   "id": "d16",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Men",
+     "arrow": "left"
+    },
+    {
+     "text": "Women",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "restroom",
+     "level": "EXACT",
+     "arrow": null,
+     "ambiguous": true
+    }
+   ]
+  },
+  {
+   "id": "d17",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "East Wing",
+     "arrow": "left"
+    },
+    {
+     "text": "West Wing",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "east wing",
+     "level": "EXACT",
+     "arrow": "left",
+     "contradictions": [
+      "area"
+     ]
+    },
+    {
+     "target": "west wing",
+     "level": "EXACT",
+     "arrow": "right",
+     "contradictions": [
+      "area"
+     ]
+    },
+    {
+     "target": "north wing",
+     "level": "NONE",
+     "arrow": null,
+     "contradictions": [
+      "area",
+      "area"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d18",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Zone A",
+     "arrow": "left"
+    },
+    {
+     "text": "Zone B",
+     "arrow": "up"
+    },
+    {
+     "text": "Zone C",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "zone B",
+     "level": "EXACT",
+     "arrow": "up",
+     "contradictions": [
+      "area",
+      "area"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d19",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Basement",
+     "arrow": "down"
+    },
+    {
+     "text": "Level 1",
+     "arrow": "up"
+    }
+   ],
+   "expect": [
+    {
+     "target": "B12",
+     "level": "FLOOR",
+     "arrow": "down",
+     "contradictions": [
+      "floor"
+     ]
+    },
+    {
+     "target": "120",
+     "level": "FLOOR",
+     "arrow": "up",
+     "contradictions": [
+      "floor"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d20",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Main Entrance",
+     "arrow": "left"
+    },
+    {
+     "text": "Information",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "entrance",
+     "level": "EXACT",
+     "arrow": "left"
+    },
+    {
+     "target": "information",
+     "level": "EXACT",
+     "arrow": "right"
+    }
+   ]
+  },
+  {
+   "id": "d21",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Exit A",
+     "arrow": "left"
+    },
+    {
+     "text": "Exit B",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "exit A",
+     "level": "EXACT",
+     "arrow": "left",
+     "contradictions": [
+      "facility"
+     ]
+    },
+    {
+     "target": "exit",
+     "level": "EXACT",
+     "arrow": null,
+     "ambiguous": true
+    }
+   ]
+  },
+  {
+   "id": "d22",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Radiology",
+     "arrow": "right"
+    },
+    {
+     "text": "Cardiology",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "radiology",
+     "level": "NAMED",
+     "arrow": "right"
+    },
+    {
+     "target": "cardiology",
+     "level": "NAMED",
+     "arrow": "left"
+    },
+    {
+     "target": "oncology",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d23",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "2nd Floor",
+     "arrow": "up"
+    },
+    {
+     "text": "Ground Floor",
+     "arrow": "down"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "FLOOR",
+     "arrow": "up",
+     "contradictions": [
+      "floor"
+     ]
+    },
+    {
+     "target": "120",
+     "level": "FLOOR",
+     "arrow": "down",
+     "contradictions": [
+      "floor"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d24",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Rooms 200-250 Restrooms",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "RANGE",
+     "arrow": "left"
+    },
+    {
+     "target": "restroom",
+     "level": "EXACT",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d25",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Platform 1",
+     "arrow": "left"
+    },
+    {
+     "text": "Platform 2",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "platform 1",
+     "level": "NAMED",
+     "arrow": "left"
+    },
+    {
+     "target": "platform 2",
+     "level": "NAMED",
+     "arrow": "right"
+    },
+    {
+     "target": "platform 3",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "d26",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Lifts to all floors",
+     "arrow": "up"
+    },
+    {
+     "text": "Rooms 100-150",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "214",
+     "level": "SUBGOAL",
+     "arrow": "up",
+     "user_floor": 1
+    },
+    {
+     "target": "120",
+     "level": "RANGE",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "d27",
+   "rule": "default",
+   "entries": [
+    {
+     "text": "Room 1204",
+     "arrow": "none"
+    },
+    {
+     "text": "Rooms 1205-1230",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "1204",
+     "level": "EXACT",
+     "arrow": "none",
+     "arrived": true,
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "1210",
+     "level": "RANGE",
+     "arrow": "right"
+    }
+   ]
+  },
+  {
+   "id": "m01",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "014-100 to 014-150",
+     "arrow": "right"
+    },
+    {
+     "text": "014-151 to 014-199",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "RANGE",
+     "arrow": "right",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "014-160",
+     "level": "RANGE",
+     "arrow": "left",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "015-100",
+     "level": "NONE",
+     "arrow": null,
+     "contradictions": [
+      "building",
+      "building"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "m02",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "014-100",
+     "arrow": "none"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "EXACT",
+     "arrow": "none",
+     "arrived": true
+    },
+    {
+     "target": "015-100",
+     "level": "NONE",
+     "arrow": null,
+     "contradictions": [
+      "building"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "m03",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "Building 14",
+     "arrow": "left"
+    },
+    {
+     "text": "Building 15",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "BUILDING",
+     "arrow": "left",
+     "contradictions": [
+      "building"
+     ]
+    },
+    {
+     "target": "015-210",
+     "level": "BUILDING",
+     "arrow": "right",
+     "contradictions": [
+      "building"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "m04",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "Bldg 14",
+     "arrow": "locational"
+    },
+    {
+     "text": "Level 2",
+     "arrow": "up"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "BUILDING",
+     "arrow": "none",
+     "inside_building": true,
+     "contradictions": [
+      "floor"
+     ]
+    },
+    {
+     "target": "014-210",
+     "level": "BUILDING",
+     "arrow": "none",
+     "inside_building": true
+    }
+   ]
+  },
+  {
+   "id": "m05",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "014-200 - 014-250",
+     "arrow": "up"
+    },
+    {
+     "text": "Elevators",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "SUBGOAL",
+     "arrow": "left",
+     "user_floor": 2
+    },
+    {
+     "target": "014-210",
+     "level": "RANGE",
+     "arrow": "up"
+    }
+   ]
+  },
+  {
+   "id": "m06",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "014",
+     "arrow": "right"
+    },
+    {
+     "text": "015",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "BUILDING",
+     "arrow": "right",
+     "contradictions": [
+      "building"
+     ]
+    },
+    {
+     "target": "015-210",
+     "level": "BUILDING",
+     "arrow": "left",
+     "contradictions": [
+      "building"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "m07",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "014-120 to 014-150",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "NONE",
+     "arrow": null,
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "014-130",
+     "level": "RANGE",
+     "arrow": "left"
+    }
+   ]
+  },
+  {
+   "id": "m08",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "Toilets",
+     "arrow": "right"
+    },
+    {
+     "text": "014-100 to 014-110",
+     "arrow": "left"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "RANGE",
+     "arrow": "left"
+    },
+    {
+     "target": "restroom",
+     "level": "EXACT",
+     "arrow": "right"
+    }
+   ]
+  },
+  {
+   "id": "m09",
+   "rule": "multi_building",
+   "entries": [
+    {
+     "text": "Level 1",
+     "arrow": "up"
+    },
+    {
+     "text": "Level 2",
+     "arrow": "down"
+    }
+   ],
+   "expect": [
+    {
+     "target": "014-100",
+     "level": "FLOOR",
+     "arrow": "up",
+     "contradictions": [
+      "floor"
+     ]
+    },
+    {
+     "target": "014-210",
+     "level": "FLOOR",
+     "arrow": "down",
+     "contradictions": [
+      "floor"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "s01",
+   "rule": "singapore_units",
+   "entries": [
+    {
+     "text": "#04-01 TO #04-02",
+     "arrow": "left"
+    },
+    {
+     "text": "#04-03A TO #04-03D",
+     "arrow": "right"
+    },
+    {
+     "text": "#04-04",
+     "arrow": "up"
+    }
+   ],
+   "expect": [
+    {
+     "target": "#04-02",
+     "level": "RANGE",
+     "arrow": "left",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "#04-03B",
+     "level": "RANGE",
+     "arrow": "right",
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "#04-04",
+     "level": "EXACT",
+     "arrow": "up",
+     "contradictions": [
+      "range",
+      "range"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "s02",
+   "rule": "singapore_units",
+   "entries": [
+    {
+     "text": "#03-01",
+     "arrow": "locational"
+    },
+    {
+     "text": "#03-02 TO #03-03",
+     "arrow": "straight"
+    }
+   ],
+   "expect": [
+    {
+     "target": "#03-01",
+     "level": "EXACT",
+     "arrow": "none",
+     "arrived": true,
+     "contradictions": [
+      "range"
+     ]
+    },
+    {
+     "target": "#03-03",
+     "level": "RANGE",
+     "arrow": "up"
+    },
+    {
+     "target": "#05-01",
+     "level": "NONE",
+     "arrow": null
+    }
+   ]
+  },
+  {
+   "id": "s03",
+   "rule": "singapore_units",
+   "entries": [
+    {
+     "text": "Passenger Lifts",
+     "arrow": "straight-right"
+    },
+    {
+     "text": "Toilet",
+     "arrow": "straight-left"
+    },
+    {
+     "text": "#B1-05 TO #B1-10",
+     "arrow": "down"
+    }
+   ],
+   "expect": [
+    {
+     "target": "#B1-07",
+     "level": "RANGE",
+     "arrow": "down"
+    },
+    {
+     "target": "restroom",
+     "level": "EXACT",
+     "arrow": "up-left"
+    },
+    {
+     "target": "#04-01",
+     "level": "SUBGOAL",
+     "arrow": "up-right",
+     "user_floor": -1
+    }
+   ]
+  },
+  {
+   "id": "s04",
+   "rule": "singapore_units",
+   "entries": [
+    {
+     "text": "Zone F",
+     "arrow": "left"
+    },
+    {
+     "text": "Kent Ridge Wing",
+     "arrow": "right"
+    }
+   ],
+   "expect": [
+    {
+     "target": "zone F",
+     "level": "EXACT",
+     "arrow": "left"
+    },
+    {
+     "target": "kent ridge wing",
+     "level": "EXACT",
+     "arrow": "right"
+    }
+   ]
+  }
+ ]
+}

@@ -8,3 +8,6 @@ pyttsx3; sys_platform != "darwin"
 onnxruntime
 huggingface_hub
 rapidocr>=3.0
+rapidfuzz>=3.0
+pyyaml
+pytest

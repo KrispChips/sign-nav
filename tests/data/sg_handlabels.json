@@ -1,0 +1,356 @@
+{
+ "note": "50 entries sampled with random.seed(2026) from the 306 unique SiGNgapore2D label texts, labelled by hand BEFORE running the parser (rule: singapore_units). Expected = the list of entry types the text should parse into.",
+ "labels": [
+  {
+   "text": "CHINESEGARDEN",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "MAIN BUILDING",
+   "types": [
+    "NAMED"
+   ],
+   "note": "no number: not a BUILDING entry"
+  },
+  {
+   "text": "THE ROCHESTER MALL",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "TO CHANGI AIRPORT",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "CAR PICKUP/DROPOFF",
+   "types": [
+    "NAMED"
+   ],
+   "note": "one destination"
+  },
+  {
+   "text": "FRONTIER CANTEEN, S16",
+   "types": [
+    "NAMED"
+   ],
+   "note": "S16 is a campus building code"
+  },
+  {
+   "text": "VISTA EXCHANGE GREEN",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "PARK AVENUE ROCHESTER",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "WAY OUT/LIFT TO STREET",
+   "types": [
+    "FACILITY",
+    "FACILITY"
+   ],
+   "note": "exit + elevator"
+  },
+  {
+   "text": "VISITOR LIFTS",
+   "types": [
+    "FACILITY"
+   ],
+   "note": ""
+  },
+  {
+   "text": "TAXI / PICK-UP POINT",
+   "types": [
+    "NAMED"
+   ],
+   "note": "one destination"
+  },
+  {
+   "text": "ZONE D",
+   "types": [
+    "AREA"
+   ],
+   "note": ""
+  },
+  {
+   "text": "PLATFORM 1",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "GRADUATE STUDENTS LOUNGE",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "#03-02",
+   "types": [
+    "ROOM"
+   ],
+   "note": ""
+  },
+  {
+   "text": "BUS STOP 2",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "CHILDREN'S EMERGENCY(WALK-IN)",
+   "types": [
+    "NAMED"
+   ],
+   "note": "a department, not an exit"
+  },
+  {
+   "text": "LEVEL 1",
+   "types": [
+    "FLOOR"
+   ],
+   "note": ""
+  },
+  {
+   "text": "CAR PARK S5",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "PLATFORM 8",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "#04-02 TO #04-04",
+   "types": [
+    "RANGE"
+   ],
+   "note": ""
+  },
+  {
+   "text": "LOWER KENT RIDGE ROAD",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "F01-11 TO F01-33",
+   "types": [
+    "RANGE"
+   ],
+   "note": "letter-prefixed floor (F01): no config covers this format yet"
+  },
+  {
+   "text": "NUH MAIN BLDG/NUS",
+   "types": [
+    "NAMED"
+   ],
+   "note": "BLDG without a number"
+  },
+  {
+   "text": "ION PATERSON LINK",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "MD6(LT35,LT36),MD11",
+   "types": [
+    "NAMED"
+   ],
+   "note": "building codes"
+  },
+  {
+   "text": "MEDICAL CENTRE",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "NATIONAL UNIVERSITY CENTRE FOR ORAL HEALTH, SINGAPORE",
+   "types": [
+    "NAMED"
+   ],
+   "note": "comma inside one name"
+  },
+  {
+   "text": "BUS STOP",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "MD3,MD6(LT35,LT36),MD11",
+   "types": [
+    "NAMED"
+   ],
+   "note": "building codes"
+  },
+  {
+   "text": "BUS STOP 6",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "WARDS",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "TRAVELATOR",
+   "types": [
+    "NAMED"
+   ],
+   "note": "moving walkway: not in the facility list, doesn't change floors"
+  },
+  {
+   "text": "LIFT LOBBY A",
+   "types": [
+    "FACILITY"
+   ],
+   "note": "elevator, label A"
+  },
+  {
+   "text": "Platform 2",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "CONCIERGE@B1/L4",
+   "types": [
+    "FACILITY"
+   ],
+   "note": "information, floors B1/L4"
+  },
+  {
+   "text": "WHEELCHAIR ACCESSIBILITY",
+   "types": [
+    "NAMED"
+   ],
+   "note": "accessible-route symbol"
+  },
+  {
+   "text": "LOST AND FOUND",
+   "types": [
+    "NAMED"
+   ],
+   "note": "AND inside one name"
+  },
+  {
+   "text": "2",
+   "types": [
+    "UNKNOWN"
+   ],
+   "note": "bare number: platform? level? too little to say"
+  },
+  {
+   "text": "MORE STALLS",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "MINISTRY OF EDUCATION/BIOPOLIS",
+   "types": [
+    "NAMED"
+   ],
+   "note": "really two destinations; names are kept unsplit by design (known limit)"
+  },
+  {
+   "text": "RADIOLOGY (TOWER B)",
+   "types": [
+    "NAMED"
+   ],
+   "note": "tower is only a note in parentheses"
+  },
+  {
+   "text": "PARKING",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "CAFE",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "NUH MEDICAL CENTRE",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "ZONE C",
+   "types": [
+    "AREA"
+   ],
+   "note": ""
+  },
+  {
+   "text": "VISITORREGISTRATION",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "TEL",
+   "types": [
+    "NAMED"
+   ],
+   "note": "telephone"
+  },
+  {
+   "text": "CHINESE GARDEN",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  },
+  {
+   "text": "PASIR RIS",
+   "types": [
+    "NAMED"
+   ],
+   "note": ""
+  }
+ ]
+}

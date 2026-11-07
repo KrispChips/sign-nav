@@ -4,3 +4,4 @@ debug_out/
 *.npz
 *.mov
 *.mp4
+.pytest_cache/

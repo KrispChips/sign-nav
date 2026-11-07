@@ -1,0 +1,12 @@
+# Singapore-style unit numbers: #04-01 = level 4, unit 01; #B1-05 = basement 1, unit 05.
+# Used for the SiGNgapore2D dataset test (malls, hospitals).
+name: singapore_units
+room_regex: '(?<![A-Z0-9])(?P<basement>B)?(?P<floor>\d{1,2})-(?P<unit>\d{2,3})(?P<suffix>[A-Z])?(?![A-Z0-9])'
+key_groups: [floor, unit]
+id_format: '{basement}{floor:02d}-{unit:02d}{suffix}'
+floor:
+  group: floor
+  basement_group: basement
+ground_floor: 1
+building_regexes:
+  - '\b(?:BUILDING|BLDG|BLD|BLK|BLOCK)\s*(?P<building>\d{1,3})\b'
