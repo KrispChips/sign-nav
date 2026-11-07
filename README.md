@@ -227,6 +227,17 @@ What the first real run (80 signs, 1615 Gemma reads) showed, and what changed be
   dataset boxes are drawn tightly around one line, whose text really is sign-height.
 - Thresholds from that run (text): 0 deg 23 px, 30 deg 29 px, 50 deg 33 px, 70 deg 58 px (true
   height); plateau 75-86%; hallucination at threshold 3-4% vs baseline 0.2-1.3%.
+- Far away, almost every detection was not text (24 of 25 at scale <= 0.16, true text < 4 px)
+  and measured as large text, firing failed reads: only lines the recognizer reads count now.
+  The estimator error with all lines visible dropped from 38% to 28% median.
+
+Simulated approaches with Gemma (20 reachable signs, 4 angles, walk + 4 close sightings):
+1.05 reads per sign; text recall 67% vs the reader's 78% ceiling at the closest view (text +
+arrow 50% vs 64%). The remaining text gap came from three signs, all read at full size:
+two were Gemma's run-to-run variation at the same scale as the ceiling view, one failed the
+OCR cross-check during the final close views and the walk ended before a second read. None
+were premature. Not met: the plan's absolute targets (90% recall, estimator within 20%),
+which this reader and this single-sighting estimator can't reach.
 
 Dry run without Gemma or the dataset (OCR stand-in reader, rendered signs; output is marked
 `dry_run` and is NOT a calibration): `--synthetic 12 --reader ocr` on `run`, then `fit` and
