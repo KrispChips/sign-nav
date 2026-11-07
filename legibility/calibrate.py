@@ -207,6 +207,10 @@ class GemmaReader:
         entries, raw = self.reader(crop)
         return entries, raw
 
+    def reparse(self, raw):
+        import vlm
+        return vlm.parse(raw, self.reader.version)
+
 
 class OcrProxyReader:
     """DRY RUN ONLY: RapidOCR recognition as a stand-in for Gemma (no arrows)."""
@@ -282,6 +286,8 @@ def run_experiment(signs, reader, out_dir, angles, scales, variants=1, stop_afte
                             calls += 1
                         else:
                             entries, raw = hit["entries"], hit["raw"]
+                            if hasattr(reader, "reparse") and raw:
+                                entries = reader.reparse(raw)   # same parser as live reads
                             cached += 1
                         correct, halluc, wrong_arrow = score_read(gt, entries, kind == "symbol",
                                                                    reader.ignore_arrows)

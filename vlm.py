@@ -7,8 +7,17 @@ Prompt versions (compare them with `python vlm_eval.py`):
   v3      layout first: list the sign's arrows (direction + where they are), then give each
           entry the id of its arrow. Aimed at pairing text with the wrong arrow, the main
           arrow error on signs whose entries point different ways.
+  v4      v2 plus: each destination once, in English (multilingual signs repeat it in Malay,
+          Chinese, Tamil), and pictograms named by the place they mark, never described.
+          v2's extra "invented" entries were almost all such translations and icon
+          descriptions (36 of v2's 71 vs 5 of v1's 38); v4 keeps v2's arrow rules without them.
+Results on 80 SiGNgapore2D signs x 2 views (vlm_eval.py), v1 / v2 / v3: arrows exact
+70.9 / 75.4 / 73.8%, within 45 deg 77.2 / 84.0 / 82.9%, text recall 62.3 / 65.2 / 61.6%,
+invented entries per read 0.25 / 0.47 / 0.93.
+Whatever the prompt, parse() drops entries without a single Latin letter or digit.
 All versions return the same entries: [{"text", "arrow"}] in the step 1 arrow vocabulary."""
 import json
+import re
 
 import cv2
 
@@ -58,7 +67,15 @@ Rules:
 - Copy text exactly. Never guess text you cannot read. If nothing is legible, return
   {{"arrows": [], "entries": []}}."""
 
-PROMPTS = {"v1": PROMPT, "v2": PROMPT_V2, "v3": PROMPT_V3}
+_V4_RULES = """- Each destination once, in English: if the sign repeats it in other languages (Malay,
+  Chinese, Tamil, ...), give only the English. Skip text that is only in another language.
+- Pictograms: if a symbol marks a place (toilets, lift, stairs, exit, wheelchair access,
+  information), give the place's name, e.g. "Toilets", with its arrow. Never describe the
+  drawing ("man icon"), and skip decorative icons and logos.
+"""
+PROMPT_V4 = PROMPT_V2.replace("- Copy text exactly.", _V4_RULES + "- Copy text exactly.")
+
+PROMPTS = {"v1": PROMPT, "v2": PROMPT_V2, "v3": PROMPT_V3, "v4": PROMPT_V4}
 DEFAULT_PROMPT = "v1"
 ARROWS = {"left", "right", "up", "down", "up-left", "up-right", "down-left", "down-right", "none"}
 
@@ -88,6 +105,8 @@ def parse(raw, version="v1"):
         if not isinstance(e, dict):
             continue
         text = str(e.get("text", "")).strip()
+        if not re.search(r"[A-Za-z0-9]", text):   # nothing an English voice can say
+            continue
         a = str(e.get("arrow", "none")).strip()
         arrow = ids.get(a.upper()) if a.upper() in ids else canonical_arrow(a)
         if text:

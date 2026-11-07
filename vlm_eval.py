@@ -82,8 +82,9 @@ class Reader:
     def __call__(self, crop, cache):
         key = Cache.key(crop, self.tag)
         hit = cache.get(key)
-        if hit is not None:
-            return hit["entries"], True
+        if hit is not None:   # re-parse the raw output: every prompt scored by the current parser
+            import vlm
+            return (vlm.parse(hit["raw"], self.version) if hit.get("raw") else hit["entries"]), True
         entries, raw = self.reader(crop)
         cache.put(key, {"entries": entries, "raw": raw})
         return entries, False

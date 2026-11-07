@@ -6,7 +6,9 @@ from vlm_eval import arrow_close, score_sign, summarize
 
 
 def test_all_prompts_exist():
-    assert set(PROMPTS) == {"v1", "v2", "v3"}
+    assert set(PROMPTS) == {"v1", "v2", "v3", "v4"}
+    assert "in English" in PROMPTS["v4"] and "Never describe the" in PROMPTS["v4"]
+    assert PROMPTS["v4"].split("- Each destination once")[0] == PROMPTS["v2"].split("- Copy text exactly")[0]
     assert "up-left" in PROMPTS["v2"] and '"arrows"' in PROMPTS["v3"]
 
 
@@ -45,3 +47,10 @@ def test_score_and_summary():
     t = summarize([{"sign": "s", "view": 0, "score": s}, {"sign": "s", "view": 30, "score": s}])
     assert t["arrow_exact"][0] == 1 / 3 and t["stable_across_views"][0] == 1.0
     assert t["arrow_mixed_signs"][1] == 6
+
+
+def test_parse_drops_entries_with_no_latin_text():
+    raw = json.dumps({"entries": [{"text": "\u80be\u810f\u90e8", "arrow": "left"},
+                                  {"text": "\u80be\u810f\u90e8 Kidney Unit", "arrow": "left"},
+                                  {"text": "\u2191", "arrow": "up"}]})
+    assert [e["text"] for e in parse(raw)] == ["\u80be\u810f\u90e8 Kidney Unit"]
