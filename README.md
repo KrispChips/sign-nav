@@ -244,6 +244,29 @@ Dry run without Gemma or the dataset (OCR stand-in reader, rendered signs; outpu
 `simulate --synthetic 20 --reader ocr`. Here: 0.85 reads/sign, 79% final recall vs a 94%
 reader ceiling, which says nothing about Gemma: the stand-in's cross-check can't fail.
 
+## Reader prompts and arrows (`vlm.py`, `vlm_eval.py`)
+
+From 3479 entries whose text Gemma read in the calibration run: arrows were right 62% of the
+time. Diagonals are almost never reported (up-left right 2%, read as left 46%); labels of this
+place such as floor markers "L2" get an invented arrow (20% read as up); left/right confusions
+(18% / 9%). Signs whose entries share one arrow: 76%; signs whose entries point different
+ways: 59%. Angle and distance barely matter, so this is the reader, not the pipeline. Answers
+are unstable (only 18% of entries get the same arrow in every view) but correlated within a
+sign, so majority votes help little (3 reads: 64.7% -> 68.4%).
+
+`vlm.py` now has prompt versions: `v1` (original), `v2` (arrow glyph key, diagonals kept, one
+arrow can serve several lines, "none" for labels of this place incl. floor markers), `v3`
+(list the arrows first with where they are, then entries reference an arrow id). Compare:
+
+```powershell
+python vlm_eval.py --gt data\SiGNgapore2D\gt\gt_annotation.json --images data\SiGNgapore2D\images --prompts v1 v2 v3 --cache calib_runs\v1\cache
+```
+It reads each calibration sign at its closest view from two angles (the same views as the
+calibration run, so v1 comes from its cache), and prints text recall, arrow accuracy (exact and
+within 45 degrees), split by one-arrow vs mixed-arrow signs, straight / diagonal / "none", the
+share of entries given the same arrow from both views, and invented entries per read. Add
+`--model <ollama tag>` to try a larger model.
+
 ## Annotated video
 
 ```bash

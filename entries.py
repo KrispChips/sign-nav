@@ -29,6 +29,8 @@ _ARROW_ALIASES = {
     "straight-right": "up-right", "locational": "none", "here": "none", "": "none",
     "left-up": "up-left", "right-up": "up-right", "left-down": "down-left",
     "right-down": "down-right",
+    "←": "left", "→": "right", "↑": "up", "↓": "down",     # arrow glyphs
+    "↖": "up-left", "↗": "up-right", "↙": "down-left", "↘": "down-right",
 }
 
 

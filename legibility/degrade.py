@@ -31,8 +31,12 @@ def log_scales(n=10, smallest=0.08):
 
 
 def stable_seed(*parts) -> int:
-    """Same parts -> same seed, across runs and machines (unlike hash())."""
-    return zlib.crc32("|".join(map(str, parts)).encode())
+    """Same parts -> same seed, across runs and machines (unlike hash()). Whole-number floats
+    count as ints: an angle of 30 from a default list and 30.0 from the command line must
+    give the same view (otherwise caches silently miss)."""
+    def norm(x):
+        return int(x) if isinstance(x, float) and x.is_integer() else x
+    return zlib.crc32("|".join(str(norm(p)) for p in parts).encode())
 
 
 @dataclass

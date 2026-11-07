@@ -198,10 +198,10 @@ class GemmaReader:
     ignore_arrows = False
     dry_run = False
 
-    def __init__(self, model="gemma4:e4b", host=None):
+    def __init__(self, model="gemma4:e4b", host=None, prompt=None):
         import vlm
-        self.reader = vlm.SignReader(model, host)
-        self.tag = f"gemma|{model}|{hashlib.sha256(vlm.PROMPT.encode()).hexdigest()[:16]}"
+        self.reader = vlm.SignReader(model, host, prompt or vlm.DEFAULT_PROMPT)
+        self.tag = f"gemma|{model}|{hashlib.sha256(self.reader.prompt.encode()).hexdigest()[:16]}"
 
     def __call__(self, crop):
         entries, raw = self.reader(crop)

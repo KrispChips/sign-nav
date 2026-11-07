@@ -30,6 +30,8 @@ def test_scales_are_log_spaced():
 
 def test_reproducible():
     assert stable_seed("sign7", 30, 2) == stable_seed("sign7", 30, 2)
+    assert stable_seed("sign7", 30.0, 2) == stable_seed("sign7", 30, 2)    # CLI floats = defaults
+    assert stable_seed("sign7", 30.5, 2) != stable_seed("sign7", 30, 2)
     assert sample_params(30, 0.5, 42) == sample_params(30, 0.5, 42)
     crop = plate(LINES[1], 20)[0]
     a = degrade(crop, sample_params(30, 0.5, 42)).image
