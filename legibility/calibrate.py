@@ -48,7 +48,9 @@ LABEL_KEYS = {"text labels": "text", "mixed": "text", "symbol labels": "symbol"}
 # ============================================================== dataset
 
 def load_dataset(gt_path, images_dir):
-    """SiGNgapore2D ground truth -> one dict per annotated sign. boundingBox is x, y, w, h."""
+    """SiGNgapore2D ground truth -> one dict per annotated sign. boundingBox is
+    [centre x, centre y, width, height] in pixels (the dataset's own evaluation code calls it
+    "xywh-center"; reading it as a top-left corner crops half a sign away from the board)."""
     out = []
     for img in json.loads(Path(gt_path).read_text(encoding="utf-8")):
         for ann in img.get("annotation", []):
@@ -77,9 +79,15 @@ def crop_of(sign):
         if _IMAGES[path] is None:
             raise FileNotFoundError(path)
     im = _IMAGES[path]
-    x, y, w, h = [int(round(v)) for v in sign["bbox"]]
-    x1, y1 = max(0, x), max(0, y)
-    return im[y1:min(im.shape[0], y + h), x1:min(im.shape[1], x + w)].copy()
+    return crop_box(im, sign["bbox"])
+
+
+def crop_box(im, bbox):
+    """Crop a [centre x, centre y, width, height] box, clipped to the image."""
+    cx, cy, w, h = [float(v) for v in bbox]
+    x1, y1 = max(0, int(round(cx - w / 2))), max(0, int(round(cy - h / 2)))
+    x2, y2 = min(im.shape[1], int(round(cx + w / 2))), min(im.shape[0], int(round(cy + h / 2)))
+    return im[y1:y2, x1:x2].copy()
 
 
 # ============================================================== Part C: true heights
@@ -91,9 +99,11 @@ class TruthFinder:
     At scale s the true height is the full-resolution height times s."""
 
     def __init__(self, side_len=2000):
+        import logging
         from rapidocr import RapidOCR
         self.engine = RapidOCR(params={"Det.limit_type": "max", "Det.limit_side_len": side_len,
                                        "Global.use_cls": False})
+        logging.getLogger("RapidOCR").setLevel(logging.ERROR)
 
     def __call__(self, crop, entries):
         r = self.engine(crop, use_det=True, use_cls=False, use_rec=True)
@@ -364,8 +374,22 @@ def _relation(pairs):
     return float(c), float(d)
 
 
+def readable_up_close(rows):
+    """Per sign, the entries the reader got right at its closest, most head-on view. Entries it
+    misses even there (circled-number "PLATFORM 5" annotations, stylized lettering, text the
+    reader just doesn't return) aren't a distance problem: walking closer can't fix them, so
+    they stay out of the accuracy curve instead of dragging it down at every height."""
+    best = {}
+    for r in rows:
+        key = (r["angle"], -r["scale"])
+        if r["sign"] not in best or key < best[r["sign"]][0]:
+            best[r["sign"]] = (key, r)
+    return {s: {i for i, e in enumerate(r["entries"]) if e["correct"]} for s, (_, r) in best.items()}
+
+
 def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
     text = [r for r in rows if r["kind"] == "text"]
+    readable = readable_up_close(text)
     symbol = [r for r in rows if r["kind"] == "symbol"]
     out = {"version": 1, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
            "reader": sorted({r["reader"] for r in rows}),
@@ -401,8 +425,11 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
     # ---- accuracy curve per angle
     for angle in sorted({r["angle"] for r in text}):
         rs = [r for r in text if r["angle"] == angle]
-        ent = [(e["h"], e["correct"]) for r in rs for e in r["entries"] if e["h"]]
-        res = {"angle": angle, "n_entries": len(ent), "blocked": False}
+        ent = [(e["h"], e["correct"]) for r in rs for i, e in enumerate(r["entries"])
+               if e["h"] and i in readable.get(r["sign"], ())]
+        dropped = sum(1 for r in rs for i, e in enumerate(r["entries"])
+                      if e["h"] and i not in readable.get(r["sign"], ()))
+        res = {"angle": angle, "n_entries": len(ent), "n_unreadable_up_close": dropped, "blocked": False}
         # The detector loses squeezed (oblique) text sooner, so the floor is per angle too.
         a_pairs = [(r["truth"]["h_p25"], r["live"]["h_p25"]) for r in rs]
         res["floor_true"] = _accuracy_floor(a_pairs) or floor_true

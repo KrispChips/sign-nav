@@ -42,11 +42,17 @@ def ocr_engine(side_len=OCR_SIDE_LEN):
     The resize limit is the setting that matters: the default scales the SHORT side up to
     736 px, ~10x slower on small crops. The angle classifier is off since crops are already
     rectified."""
+    import logging
     from rapidocr import RapidOCR
+    # "The text detection result is empty" is logged for every crop without text, which for
+    # distant signs is most of them: keep RapidOCR to errors only.
+    logging.getLogger("RapidOCR").setLevel(logging.ERROR)
     # NOTE: RapidOCR keeps use_det/use_cls/use_rec from the previous call on the same engine,
     # so every call in this repo passes all three explicitly.
-    return RapidOCR(params={"Det.limit_type": "max", "Det.limit_side_len": side_len,
-                            "Global.use_cls": False})
+    engine = RapidOCR(params={"Det.limit_type": "max", "Det.limit_side_len": side_len,
+                              "Global.use_cls": False})
+    logging.getLogger("RapidOCR").setLevel(logging.ERROR)   # RapidOCR resets it on creation
+    return engine
 
 
 class OcrCheck:

@@ -116,3 +116,24 @@ def test_end_to_end_tiny_run_and_cache(tmp_path):
                    log=lambda *a: None)
     assert len(calls) == first          # second run is served entirely from the cache
     json.dumps(rows)                    # rows are plain JSON
+
+
+def test_dataset_boxes_are_centre_based():
+    """SiGNgapore2D boundingBox = [centre x, centre y, w, h] (IMG_0056_frame_0011: the board
+    spans x 608-1197, y 229-483 for [903, 356, 589, 254])."""
+    from legibility.calibrate import crop_box
+    im = np.zeros((1080, 1920, 3), np.uint8)
+    im[229:483, 608:1197] = 255
+    crop = crop_box(im, [903, 356, 589, 254])
+    assert abs(crop.shape[0] - 254) <= 1 and abs(crop.shape[1] - 589) <= 1 and crop.mean() > 245
+    assert crop_box(im, [10, 10, 40, 40]).shape[:2] == (30, 30)     # clipped at the edge
+
+
+def test_entries_unreadable_up_close_stay_out_of_the_curve():
+    rows = synthetic_rows({0: 12.0})
+    for r in rows:   # a second entry the reader never gets, at any size
+        r["entries"].append({"h": r["entries"][0]["h"], "correct": False})
+    calib, _ = fit(rows)
+    a0 = calib["angles"][0]
+    assert a0["n_unreadable_up_close"] > 0
+    assert a0["h_star_true"] == pytest.approx(12.0, rel=0.15)    # not dragged up or blocked
