@@ -5,3 +5,6 @@ debug_out/
 *.mov
 *.mp4
 .pytest_cache/
+calib_runs/
+sim_runs/
+data/

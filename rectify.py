@@ -13,7 +13,10 @@ info (all plain Python types, so it can go straight into reads.jsonl):
   height_px   sign height in the image, i.e. how much resolution we have
   sharpness   variance of the Laplacian on a fixed-height copy of the crop
   truncated   box touches the image border (part of the sign is probably cut off)
-  quad_found  whether step 1 found an outline"""
+  quad_found  whether step 1 found an outline
+  v_scale     source pixels per crop pixel, vertically, at the crop centre. Multiply a height
+              measured in the crop by this to get source pixels: small signs are enlarged to
+              at least 16 px (no detail added), and v_scale undoes that."""
 import cv2
 import numpy as np
 
@@ -115,6 +118,16 @@ def plane_geometry(quad, K):
     return float(aspect), n
 
 
+def source_px_per_crop_px(H, crop_shape):
+    """Local vertical scale of the rectifying homography at the crop centre: how many source
+    pixels one crop pixel spans along the sign's vertical axis."""
+    Hi = np.linalg.inv(H)
+    cx, cy = crop_shape[1] / 2.0, crop_shape[0] / 2.0
+    p = Hi @ np.array([[cx, cx], [cy, cy + 1.0], [1.0, 1.0]])
+    p = p[:2] / p[2]
+    return float(np.linalg.norm(p[:, 1] - p[:, 0]))
+
+
 def rectify(image, box, K, max_h=400, margin=0.06):
     h, w = image.shape[:2]
     x1, y1, x2, y2 = [float(v) for v in box]
@@ -154,5 +167,6 @@ def rectify(image, box, K, max_h=400, margin=0.06):
         truncated=bool(x1 <= 2 or y1 <= 2 or x2 >= w - 3 or y2 >= h - 3),
         quad_found=bool(found),
         quad=[[round(float(a), 1), round(float(b), 1)] for a, b in quad],
+        v_scale=source_px_per_crop_px(H, crop.shape),
     )
     return crop, info

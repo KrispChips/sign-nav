@@ -33,18 +33,29 @@ NEGATIVE_PROMPTS = (
 )
 
 
+OCR_SIDE_LEN = 320
+
+
+def ocr_engine(side_len=OCR_SIDE_LEN):
+    """The one OCR configuration used live and in calibration (legibility measurements depend
+    on it: box heights change with the detector's input size).
+    The resize limit is the setting that matters: the default scales the SHORT side up to
+    736 px, ~10x slower on small crops. The angle classifier is off since crops are already
+    rectified."""
+    from rapidocr import RapidOCR
+    # NOTE: RapidOCR keeps use_det/use_cls/use_rec from the previous call on the same engine,
+    # so every call in this repo passes all three explicitly.
+    return RapidOCR(params={"Det.limit_type": "max", "Det.limit_side_len": side_len,
+                            "Global.use_cls": False})
+
+
 class OcrCheck:
-    def __init__(self, min_conf=0.6, min_chars=2, side_len=320):
-        from rapidocr import RapidOCR
-        # The resize limit is the setting that matters: the default scales the SHORT side up
-        # to 736 px, ~10x slower on small crops. The angle classifier is off since crops are
-        # already rectified.
-        self.engine = RapidOCR(params={"Det.limit_type": "max", "Det.limit_side_len": side_len,
-                                       "Global.use_cls": False})
+    def __init__(self, min_conf=0.6, min_chars=2, side_len=OCR_SIDE_LEN, engine=None):
+        self.engine = engine or ocr_engine(side_len)
         self.min_conf, self.min_chars = min_conf, min_chars
 
     def __call__(self, crop):
-        r = self.engine(crop, use_cls=False)
+        r = self.engine(crop, use_det=True, use_cls=False, use_rec=True)
         lines = list(zip(r.txts or (), r.scores or ()))
         n = sum(len(re.findall(r"[0-9A-Za-z]", t)) for t, c in lines if c >= self.min_conf)
         text = " | ".join(f"{t} ({c:.2f})" for t, c in lines)

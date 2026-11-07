@@ -11,3 +11,4 @@ rapidocr>=3.0
 rapidfuzz>=3.0
 pyyaml
 pytest
+matplotlib

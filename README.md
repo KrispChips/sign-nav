@@ -22,6 +22,7 @@ undistorted frame ──► Depth Anything V2 (ONNX) ──► farness profile �
 | `signfilter.py` | OCR + CLIP check of each track's best crop before Gemma | No |
 | `targets.py`, `entries.py`, `matcher.py`, `facilities.py` | target parser + sign matcher (pure Python) | No |
 | `config/buildings/*.yaml` | room numbering per building | Per building, not per device |
+| `legibility/` | when is a sign legible enough to read, and how much closer to get | Recalibrate on glasses footage |
 | `intersection.py` | depth model, farness profile, opening detector (from `geometric_intersection_detection.ipynb`) | No |
 | `main.py` | the loop, TTS, debug logging | No |
 
@@ -144,6 +145,74 @@ repo or set `SIGN_UNDERSTANDING_GT`; without it that test is skipped. Full repor
 format no config covers yet), self-consistency 100% (1241 targets), 0 false EXACT/RANGE on 553
 negatives. Self-consistency only shows the matcher finds an entry when asked for it; it is
 not a measure of parsing accuracy (that's what the hand labels are for).
+
+## Legibility estimator (`legibility/`)
+
+Decides, per sighting, whether a sign's text is large enough to read now and, if not, how
+much closer to get. Not wired into `main.py` yet: it needs a real `legibility_calib.json` first.
+
+- `measure.py` (Part A): from the rectified crop, the OCR **detector** (no recognizer, same
+  320 px settings as the filter) finds text lines. Line height = width at half maximum of the
+  row-contrast profile inside each box, in **source pixels** (the crop is resampled to source
+  scale first, so an enlarged crop gives the same number). `h_p25`, `h_med`, `n_lines`,
+  `sign_px` (true shorter side), `angle` (from frontality), `sharpness`.
+- `degrade.py` (Part B): plane rotation (0/30/50/70 deg), log-spaced area downscale, Gaussian +
+  (half the time) motion blur, noise, JPEG 60-85; seeded per sample; output is a camera image +
+  box + K that goes through the live `rectify -> measure` path.
+- `calibrate.py` (Parts C-E): `run` degrades signs, reads each sample (cached by image + prompt
+  hash, early stop after two zero-recall scales), writes `samples.jsonl`; `fit` writes
+  `legibility_calib.json` + plots. Real-footage rows with the same fields can replace the
+  synthetic ones later without touching the model.
+- `model.py` (Part F): `is_legible`, `scale_needed`, `steps_closer(m, d_now, step_len=0.7)`,
+  `blocked_by_angle`, with log interpolation between angle bins.
+- `trigger.py` (Part G): median of 3, read when legible in 2 of 3 + sharp enough + not blocked;
+  failed OCR cross-check -> threshold x1.3 and approach; 2 failures -> unreadable; max 3 reads.
+- `simulate.py` (test 6): constant-speed approaches through the live path + trigger + reader.
+
+Differences from the plan, found while building it:
+- Line height is the half-maximum width inside each detector box, not the box itself. The
+  box is padded and grows with blur: small blurred text read 35-40% too tall; half-maximum
+  width tracks the truth within 10% from 8 px up on rendered signs.
+- Boxes taller than 85% of the sign are dropped: with tiny text the detector sometimes
+  returns one box around the whole sign, which made far signs look *more* legible.
+- Thresholds are stored in live-measurement units (the accuracy curve is fitted on true
+  height, then converted through the fitted live-vs-true relation), per angle.
+- Two floors per angle: the detection floor (below it text often isn't found) and the
+  accuracy floor (below it detected measurements stop being within 20%). The model trusts
+  measurements above the accuracy floor; detected text below it counts as not legible.
+- No-text fallback: a sign with no detected text is read as a pictogram only once it is as
+  large as text signs are when their text gets detected (also fitted), so far-away text signs
+  don't fire a premature read.
+- Hallucination check uses the rate above each sign's full-resolution baseline: SiGNgapore2D
+  only annotates navigational cues, so other real text on a sign isn't an invention.
+- RapidOCR keeps `use_det/use_cls/use_rec` between calls on the same engine; every call in
+  this repo now passes all three (regression test in `tests/test_measure.py`).
+
+### Running the calibration (on the PC, needs Gemma via Ollama)
+
+Download SiGNgapore2D (link in https://github.com/AdaCompNUS/sign-understanding, the
+`dataset.zip` holds `images/` and the ground-truth JSON) and unzip it to `data\SiGNgapore2D`.
+
+```powershell
+python -m pip install -r requirements.txt
+# ~80 text signs + all symbol-only signs, 8 scales, 4 angles; early stopping keeps it to
+# roughly 1500 Gemma calls (about an hour on an RTX 5060 Ti). Reruns are served from the cache.
+python -m legibility.calibrate run --gt data\SiGNgapore2D\gt_annotation.json --images data\SiGNgapore2D\images --reader gemma --out calib_runs\v1
+python -m legibility.calibrate fit --samples calib_runs\v1\samples.jsonl --out legibility_calib.json
+# test 6: 20 simulated approaches with Gemma
+python -m legibility.simulate --calib legibility_calib.json --gt data\SiGNgapore2D\gt_annotation.json --images data\SiGNgapore2D\images --reader gemma --signs 20 --out sim_runs\v1
+```
+`fit` prints the thresholds per angle, the accuracy above each, the hallucination rate there
+(and its baseline), both floors and the estimator error, and saves
+`legibility_accuracy.png`, `legibility_estimator.png`, `legibility_pictogram.png` next to the
+JSON. If simulated final recall comes out under 90%, refit with `--target 0.95` (in the dry
+run below that moved recall from 78% to 84%) and simulate again; the simulation also prints the
+reader's ceiling (recall at the closest view), which bounds what any trigger can reach.
+
+Dry run without Gemma or the dataset (OCR stand-in reader, rendered signs; output is marked
+`dry_run` and is NOT a calibration): `--synthetic 12 --reader ocr` on `run`, then `fit` and
+`simulate --synthetic 20 --reader ocr`. Here: 0.85 reads/sign, 79% final recall vs a 94%
+reader ceiling, which says nothing about Gemma: the stand-in's cross-check can't fail.
 
 ## Annotated video
 
