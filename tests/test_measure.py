@@ -87,12 +87,14 @@ def test_small_sign_enlarged_by_rectify_reports_source_pixels(engine):
 
 
 class FakeEngine:
-    """Returns fixed detector boxes, to test the filtering around them."""
-    def __init__(self, boxes):
+    """Returns fixed boxes (and what the recognizer 'read' in each), to test the filtering."""
+    def __init__(self, boxes, txts=None, scores=None):
         self.boxes = boxes
+        self.txts = txts or ["EXIT"] * len(boxes)
+        self.scores = scores or [0.95] * len(boxes)
 
     def __call__(self, img, **kw):
-        return type("R", (), {"boxes": self.boxes})()
+        return type("R", (), {"boxes": self.boxes, "txts": self.txts, "scores": self.scores})()
 
 
 def test_whole_sign_box_is_not_a_text_line_on_a_small_sign():
@@ -130,3 +132,16 @@ def test_shared_engine_still_recognizes_after_measuring(engine):
     measure(img, frontal_info(img), engine)                  # detection only
     keep, n, text = OcrCheck(engine=engine)(img)              # must still recognize
     assert keep and n >= 4, text
+
+
+def test_unreadable_detections_are_not_text_lines():
+    """Far away, almost every detection is not text: only boxes that read as text count."""
+    img = np.full((80, 200, 3), 240, np.uint8)
+    cv2.putText(img, "EXIT", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+    blob = [[10, 5], [190, 5], [190, 75], [10, 75]]
+    line = [[15, 25], [100, 25], [100, 58], [15, 58]]
+    eng = FakeEngine([blob, line], txts=["~", "EXIT"], scores=[0.3, 0.97])
+    m = measure(img, dict(frontal_info(img), height_px=80), eng)
+    assert m.n_lines == 1 and m.h_p25 < 40
+    assert measure(img, dict(frontal_info(img), height_px=80),
+                   FakeEngine([blob], txts=["I"], scores=[0.9])).n_lines == 0   # 1 char: not text

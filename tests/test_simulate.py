@@ -7,7 +7,9 @@ from legibility.simulate import approach_scales, cross_check, summarize
 
 
 def test_approach_is_constant_speed():
-    s = approach_scales(0.1, 10)
+    s = approach_scales(0.1, 10, dwell=3)
+    assert s[-3:] == [1.0, 1.0, 1.0]
+    s = s[:-3]
     d = 1 / np.array(s)
     assert s[0] == pytest.approx(0.1) and s[-1] == pytest.approx(1.0)
     assert np.allclose(np.diff(d), np.diff(d)[0])          # equal distance steps

@@ -41,10 +41,12 @@ def cross_check(entries, ocr_text) -> bool:
     return hits >= max(1, len(entries) / 2)
 
 
-def approach_scales(start_scale=0.06, steps=40):
-    """Constant walking speed: distance falls linearly from 1/start_scale to 1 (full size)."""
+def approach_scales(start_scale=0.06, steps=40, dwell=4):
+    """Constant walking speed: distance falls linearly from 1/start_scale to 1 (full size),
+    then `dwell` more sightings at the closest view (a person stops in front of the sign for
+    a moment; each sighting gets its own blur/noise)."""
     d = np.linspace(1 / start_scale, 1.0, steps)
-    return [float(1 / x) for x in d]
+    return [float(1 / x) for x in d] + [1.0] * dwell
 
 
 def cached_read(reader, cache, crop):
@@ -108,6 +110,14 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
             "events": events}
 
 
+def reachable(sign, angle, model, engine):
+    """Does the sign's text get legible by the end of a walk, i.e. at full photo size? Many
+    dataset photos were taken from far away; a walk toward them can't get closer than that."""
+    full = crop_of(sign)
+    sc = degrade(full, sample_params(angle, 1.0, stable_seed("reach", sign["id"], angle)))
+    return model.is_legible(sight(sc.image, sc.box, sc.K, engine)[2])
+
+
 def summarize(results):
     """`evaluated` = not blocked by angle and legible by the end of the approach. Signs that
     never become legible within the simulated range (the source photo is the closest view
@@ -135,8 +145,11 @@ def main(argv=None):
     ap.add_argument("--signs", type=int, default=20)
     ap.add_argument("--angles", type=float, nargs="+", default=[0, 30, 50, 70])
     ap.add_argument("--steps", type=int, default=40)
+    ap.add_argument("--dwell", type=int, default=4, help="extra sightings at the closest view")
     ap.add_argument("--start-scale", type=float, default=0.06)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--all-signs", action="store_true",
+                    help="don't skip signs that never get legible within their photo")
     ap.add_argument("--out", default="sim_runs/run")
     a = ap.parse_args(argv)
 
@@ -147,21 +160,33 @@ def main(argv=None):
     else:
         if not (a.gt and a.images):
             ap.error("--gt and --images are required (or --synthetic N)")
-        signs = [s for s in select_signs(load_dataset(a.gt, a.images), a.signs, a.seed) if s["text"]][:a.signs]
+        # all text signs, shuffled; the reachable ones are picked below
+        signs = [s for s in select_signs(load_dataset(a.gt, a.images), 10 ** 6, a.seed) if s["text"]]
     reader = GemmaReader(a.model, a.ollama_host) if a.reader == "gemma" else OcrProxyReader()
     model = LegibilityModel.load(a.calib)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     cache, engine = Cache(out / "cache"), ocr_engine()
     results = []
-    for i, sign in enumerate(signs, 1):
-        angle = a.angles[(i - 1) % len(a.angles)] if len(a.angles) > 1 else a.angles[0]
-        r = simulate_sign(sign, angle, model, reader, cache, engine, approach_scales(a.start_scale, a.steps))
+    skipped = []
+    for sign in signs:
+        if len(results) >= a.signs:
+            break
+        angle = a.angles[len(results) % len(a.angles)]
+        if not a.all_signs and not reachable(sign, angle, model, engine):
+            skipped.append(sign["id"])
+            continue
+        r = simulate_sign(sign, angle, model, reader, cache, engine, approach_scales(a.start_scale, a.steps, a.dwell))
         results.append(r)
-        print(f"[{i}/{len(signs)}] {sign['id']} @ {angle:.0f} deg: {r['reads']} read(s), {r['state']}, "
+        i = len(results)
+        print(f"[{i}/{a.signs}] {sign['id']} @ {angle:.0f} deg: {r['reads']} read(s), {r['state']}, "
               f"final recall {100 * r['final_recall']:.0f}% (ceiling {100 * r['ceiling_recall']:.0f}%)"
               + ("" if r["category"] == "evaluated" else f"  [{r['category']}]"))
     s = summarize(results)
+    s["skipped_unreachable"] = len(skipped)
     s["dry_run"] = bool(a.synthetic) or a.reader != "gemma"
+    if skipped:
+        print(f"skipped {len(skipped)} signs whose text never gets legible within their photo "
+              "(the photo is the closest view a simulation has); --all-signs keeps them")
     (out / "results.json").write_text(json.dumps({"summary": s, "signs": results}, indent=1))
     if s["dry_run"]:
         print("*** DRY RUN: not an acceptance result ***")

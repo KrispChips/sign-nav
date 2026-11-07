@@ -23,9 +23,13 @@ small to resolve, the detector sometimes returns one box around the whole sign, 
 make a far sign look MORE legible than a near one. Larger signs keep them: SiGNgapore2D has
 many boxes drawn tightly around one line of text, whose text really is ~sign-height.
 
-Why detection only, and not the filter's boxes: with recognition on, RapidOCR drops lines it
-can't read with confidence, and at a distance those are exactly the lines being measured."""
+Only READABLE lines count: a detected box is kept if the recognizer reads at least 2 letters
+or digits from it at confidence >= 0.6 (the filter's rule). An earlier version measured every
+detected box, to keep small lines the recognizer can't read yet; but on SiGNgapore2D almost
+every detection on far signs (24 of 25 at scale <= 0.16, true text < 4 px) was not text, and
+it measured as large text, so far signs looked legible and fired failed reads."""
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -66,6 +70,18 @@ def detect_boxes(crop, engine) -> list:
     """Text boxes from the detector alone, in crop pixels."""
     r = engine(crop, use_det=True, use_cls=False, use_rec=False)
     return [] if r.boxes is None else list(r.boxes)
+
+
+MIN_CONF, MIN_CHARS = 0.6, 2
+
+
+def readable_boxes(crop, engine, min_conf=MIN_CONF, min_chars=MIN_CHARS) -> tuple[list, int]:
+    """(boxes the recognizer reads as text, number of boxes detected), in crop pixels."""
+    r = engine(crop, use_det=True, use_cls=False, use_rec=True)
+    boxes = [] if r.boxes is None else list(r.boxes)
+    keep = [q for q, t, c in zip(boxes, r.txts or (), r.scores or ())
+            if c >= min_conf and len(re.findall(r"[0-9A-Za-z]", t)) >= min_chars]
+    return keep, len(boxes)
 
 
 def to_source_scale(crop, v_scale: float):
@@ -109,7 +125,8 @@ def measure(crop, info: dict, engine=None, min_px: float = 2.0,
     """`info` is rectify()'s dict (needs v_scale, frontality, sharpness, height_px, aspect)."""
     src = to_source_scale(crop, float(info.get("v_scale", 1.0)))
     sign_h = float(info.get("height_px", src.shape[0]))
-    boxes = [q for q in detect_boxes(src, engine)
+    readable, _ = readable_boxes(src, engine)
+    boxes = [q for q in readable
              if sign_h >= SMALL_SIGN_PX or box_height(q) <= max_frac_of_sign * sign_h]
     box_hs = [box_height(q) for q in boxes]
     gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if src.ndim == 3 else src
