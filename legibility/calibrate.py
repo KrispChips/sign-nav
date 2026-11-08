@@ -304,6 +304,7 @@ def run_experiment(signs, reader, out_dir, angles, scales, variants=1, stop_afte
                                          "h": eh * s if eh else None}
                                         for (t, a), c, eh in zip(gt, correct, tr["entry_h"])],
                             "text_correct": tcorrect,
+                            "symbols": [t for t, _ in sign["symbol"]],
                             "n_out": len(entries), "hallucinated": halluc, "wrong_arrow": wrong_arrow,
                             "read": entries, "reader": reader.tag, "dry_run": reader.dry_run,
                         }
@@ -421,11 +422,19 @@ def text_correct(r):
 
 def hallucinated(r):
     """Invented entries in a row's read, under the current definition (rescored from the
-    stored read, so older samples files are judged the same way)."""
+    stored read, so older samples files are judged the same way). Pictograms named as places
+    ("Toilets") are not inventions: they match the sign's annotated symbol labels, which the
+    text labels don't cover, or are facility names. Counting them inflated the baseline from
+    ~0.2% to ~10% once prompt v4 started naming pictograms, and pushed thresholds to ~80 px."""
     if "read" not in r:
         return r["hallucinated"]
     gt = [(e["text"], e["arrow"]) for e in r["entries"]]
-    return score_read(gt, r["read"], symbols=r["kind"] == "symbol", ignore_arrows=True)[1]
+    if r["kind"] == "symbol":
+        return score_read(gt, r["read"], symbols=True, ignore_arrows=True)[1]
+    symbols = r.get("symbols", [])
+    return sum(1 for o in r["read"] if is_invented(o.get("text", ""), gt)
+               and not any(symbol_score(sym, o.get("text", "")) >= 90 for sym in symbols)
+               and facilities.lookup(normalize(o.get("text", "")).text) is None)
 
 
 def fit_plateau(x, y, grid=np.linspace(0.3, 1.0, 71)):
@@ -719,6 +728,8 @@ def main(argv=None):
     r.add_argument("--out", default="calib_runs/run")
     f = sub.add_parser("fit", help="fit legibility_calib.json from samples")
     f.add_argument("--samples", nargs="+", required=True)
+    f.add_argument("--gt", help="SiGNgapore2D gt_annotation.json: adds each sign's pictogram labels "
+                                "to samples recorded before they were stored")
     f.add_argument("--out", default="legibility_calib.json")
     f.add_argument("--target", type=float, default=TARGET_ACCURACY)
     f.add_argument("--max-excess-hallucination", type=float, default=MAX_EXCESS_HALLUCINATION)
@@ -737,6 +748,10 @@ def main(argv=None):
         print(f"samples: {path}\nnext: python -m legibility.calibrate fit --samples {path}")
     else:
         rows = load_samples(a.samples)
+        if a.gt:
+            syms = {s["id"]: [t for t, _ in s["symbol"]] for s in load_dataset(a.gt, ".")}
+            for r in rows:
+                r.setdefault("symbols", syms.get(r["sign"], []))
         calib, plot = fit(rows, a.target, a.max_excess_hallucination)
         Path(a.out).write_text(json.dumps(calib, indent=1), encoding="utf-8")
         files = make_plots(calib, plot, Path(a.out).resolve().parent)

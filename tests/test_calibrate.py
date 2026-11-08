@@ -141,3 +141,13 @@ def test_threshold_is_relative_to_the_plateau():
     assert not a0["blocked"]
     assert a0["curve"]["plateau"] == pytest.approx(0.8, abs=0.06)
     assert a0["h_star_true"] == pytest.approx(12.0, rel=0.2)
+
+
+def test_named_pictograms_are_not_hallucinations():
+    from legibility.calibrate import hallucinated
+    r = {"kind": "text", "entries": [{"text": "EXIT", "arrow": "left", "correct": True}],
+         "read": [{"text": "Exit", "arrow": "left"}, {"text": "Toilets", "arrow": "right"},
+                  {"text": "Wheelchair accessibility", "arrow": "right"},
+                  {"text": "Steven Medlock Street", "arrow": "up"}],
+         "symbols": ["WHEELCHAIR ACCESSIBILITY"]}
+    assert hallucinated(r) == 1                    # only the street name is invented
