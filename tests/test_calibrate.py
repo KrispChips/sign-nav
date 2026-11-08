@@ -151,3 +151,18 @@ def test_named_pictograms_are_not_hallucinations():
                   {"text": "Steven Medlock Street", "arrow": "up"}],
          "symbols": ["WHEELCHAIR ACCESSIBILITY"]}
     assert hallucinated(r) == 1                    # only the street name is invented
+
+
+def test_u_shaped_hallucination_does_not_push_the_threshold_out():
+    """Made-up text falls with size, but big signs also show pictograms the reader names:
+    the rate rises again at large sizes. That must not raise a threshold set at the dip."""
+    rows = synthetic_rows({0: 12.0})
+    rnd = random.Random(3)
+    for r in rows:
+        h = r["truth"]["h_p25"]
+        p = 0.25 if h < 6 else 0.05 if h < 25 else 0.20
+        r["hallucinated"] = int(rnd.random() < p)
+    calib, _ = fit(rows)
+    a0 = calib["angles"][0]
+    assert not a0["raised_for_hallucination"]
+    assert a0["h_star_true"] == pytest.approx(12.0, rel=0.2)

@@ -420,6 +420,34 @@ def text_correct(r):
     return score_read(gt, r.get("read", []), symbols=r["kind"] == "symbol", ignore_arrows=True)[0]
 
 
+def hallucination_bins(hx, hy, n_bins=10, min_n=80):
+    """Invented-entry rate per returned entry, in log-spaced bins of true text height (bins
+    with fewer than `min_n` entries merged into the next). Measured, not fitted: on prompt v4
+    the rate is U-shaped (made-up text falls with size, but large signs also show small
+    pictograms the reader names), and a single falling curve fitted to that pushed the
+    threshold far out. Returns [(lo, hi, rate, n)]."""
+    if not hx:
+        return []
+    hx, hy = np.asarray(hx, float), np.asarray(hy, float)
+    edges = np.geomspace(hx.min(), hx.max() * 1.0001, n_bins + 1)
+    out, lo, acc_n, acc_k = [], edges[0], 0, 0.0
+    for i in range(n_bins):
+        sel = (hx >= edges[i]) & (hx < edges[i + 1])
+        acc_n += int(sel.sum()); acc_k += float(hy[sel].sum())
+        if acc_n >= min_n or i == n_bins - 1:
+            if acc_n:
+                out.append((float(lo), float(edges[i + 1]), acc_k / acc_n, acc_n))
+            lo, acc_n, acc_k = edges[i + 1], 0, 0.0
+    return out
+
+
+def _rate_at(bins, h):
+    for lo, hi, rate, _ in bins:
+        if lo <= h < hi:
+            return rate
+    return bins[-1][2] if bins and h >= bins[-1][1] else (bins[0][2] if bins else 0.0)
+
+
 def hallucinated(r):
     """Invented entries in a row's read, under the current definition (rescored from the
     stored read, so older samples files are judged the same way). Pictograms named as places
@@ -564,15 +592,22 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
             for r in rs:
                 if r["truth"]["h_p25"] and r["n_out"]:
                     nh = hallucinated(r)
-                    hx += [math.log(r["truth"]["h_p25"])] * r["n_out"]
+                    hx += [r["truth"]["h_p25"]] * r["n_out"]
                     hy += [1] * nh + [0] * (r["n_out"] - nh)
-            ha, hb = fit_logistic(hx, hy) if len(set(hy)) > 1 else (-10.0, 0.0)
-            base = float(sigmoid(ha + hb * max(hx))) if hx else 0.0
-            at = float(sigmoid(ha + hb * math.log(h_star)))
+            bins = hallucination_bins(hx, hy)
+            base = min((rate for _, _, rate, _ in bins), default=0.0)
+            dip_lo = min(bins, key=lambda b: b[2])[0] if bins else 0.0
+            at = _rate_at(bins, h_star)
             raised = False
-            if at - base > max_excess and hb < 0:
-                h_star = math.exp((logit(min(0.99, base + max_excess)) - ha) / hb)
-                at, raised = float(sigmoid(ha + hb * math.log(h_star))), True
+            # Only the falling side of the U is a distance problem: below the dip, raise the
+            # threshold until invented entries are within max_excess of the minimum (the dip
+            # bin always qualifies). At or past the dip, extra entries come from the reader
+            # naming more on a big sign: getting closer adds them, so no raise.
+            if h_star < dip_lo and at - base > max_excess:
+                for lo, hi, rate, n in bins:
+                    if hi > h_star and rate - base <= max_excess:
+                        h_star, at, raised = max(h_star, lo), rate, True
+                        break
             above = [cc for h, cc in ent if h >= h_star]
             # The floor only shapes guidance below the threshold: it never sits above it.
             res["accuracy_floor_raw"] = res["floor_true"]
@@ -583,7 +618,8 @@ def fit(rows, target=TARGET_ACCURACY, max_excess=MAX_EXCESS_HALLUCINATION):
                        accuracy_above_h_star=float(np.mean(above)) if above else None,
                        hallucination_at_h_star=at, hallucination_baseline=base,
                        raised_for_hallucination=raised,
-                       hallucination_curve={"a": ha, "b": hb})
+                       hallucination_not_distance_related=bool(h_star >= dip_lo and at - base > max_excess),
+                       hallucination_bins=bins)
         out["angles"].append(res)
         plot["angles"][angle] = {"entries": ent, "rows": rs}
 
@@ -650,10 +686,10 @@ def make_plots(calib, plot, out_dir):
             ax.plot(xs, cv.get("plateau", 1.0) * sigmoid(cv["a"] + cv["b"] * np.log(xs)), "-", color="#1f77b4")
             ax.axhline(cv.get("plateau", 1.0) * calib["settings"]["target_fraction_of_plateau"],
                        color="gray", lw=0.8, ls=":")
-        if "hallucination_curve" in res:
-            xs = np.geomspace(hs.min(), hs.max(), 100)
-            hc = res["hallucination_curve"]
-            ax.plot(xs, sigmoid(hc["a"] + hc["b"] * np.log(xs)), "--", color="#d62728", label="hallucination")
+        if res.get("hallucination_bins"):
+            hb_ = res["hallucination_bins"]
+            ax.plot([math.sqrt(lo * hi) for lo, hi, _, _ in hb_], [r_ for _, _, r_, _ in hb_], "s--",
+                    color="#d62728", ms=4, label="invented entries (binned)")
         if res.get("h_star_true"):
             ax.axvline(res["h_star_true"], color="k", lw=1)
             ax.text(res["h_star_true"], 0.05, f" h*={res['h_star_true']:.1f}", fontsize=8)
@@ -779,7 +815,9 @@ def report(c):
                   f"{r['h_star_true']:.1f} px true = {r['h_star']:.1f} px live; text read above it "
                   f"{100 * r['text_accuracy_above_h_star']:.0f}%; hallucination {100 * r['hallucination_at_h_star']:.1f}% "
                   f"(baseline {100 * r['hallucination_baseline']:.1f}%)"
-                  + (", raised for hallucination" if r["raised_for_hallucination"] else "") + arrow_s)
+                  + (", raised for hallucination" if r["raised_for_hallucination"] else "")
+                  + (" (above the minimum, but at sizes where getting closer adds entries, not removes them)"
+                     if r.get("hallucination_not_distance_related") else "") + arrow_s)
     p = c["pictogram"]
     print(f"pictogram: sign_px* = {p['sign_px_star']:.1f} px" + (f" ({p['note']})" if p.get("note") else ""))
     print(f"trigger: min_sharpness {c['trigger']['min_sharpness']:.0f}, waits {c['trigger'].get('settle_sightings', 2)} "
