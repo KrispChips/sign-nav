@@ -345,10 +345,13 @@ What gets announced:
 
 How: each depth map becomes a top-down scan at eye height, one point per image column, in
 metres. The floor at the bottom of the image sets the scale (it is `--eye-height` below the
-camera). The depth model's unknown offset comes from the two walls: in inverse depth each wall
-is a straight line, and the two meet at the vanishing point, where the true value is zero.
-Walls are line fits to each side (pillars and cabinets sit inside the line, recesses less
-than 0.45 m behind it, so neither is a gap); a gap is a run of columns seeing well past the
+camera). The depth model's unknown offset comes from the vanishing point: in inverse depth
+each wall parallel to the corridor is a straight line through it, where the true value is
+zero. The vanishing point is the centre of the farthest region; candidates (each cleanly seen
+wall extended to it, and the two walls' crossing) are tried and the one both walls fit best
+through wins. Walls are then fitted through it, one parameter per side, so cabinets and door
+frames can't tilt them (pillars and cabinets sit inside the line, recesses less than 0.45 m
+behind it, so neither is a gap); a gap is a run of columns seeing well past the
 wall, and its width along the wall is measured from the rays at its two edges. Each gap is
 tracked over frames; it's classified from close measurements (precision depends on the
 viewing angle), then announced once.
@@ -356,8 +359,18 @@ viewing angle), then announced once.
 On synthetic walks (`tests/corridor_world.py`: doorways into rooms, side hallways 2-3 m wide,
 a crossing, a T, pillars + recesses + a cabinet, a lounge, a lobby; with depth noise, head
 sway, walking off-centre, head pitch, a wide landscape lens, the wrong eye height):
-188/192 walks give exactly the expected announcements; the misses are T junctions passed
-off-centre, where only one side gets announced.
+182/192 walks give exactly the expected announcements. Misses: T junctions passed off-centre
+(only one side announced); walking off-centre into a lobby or past a lounge with a wide lens
+gives "Open area on your right" / "Open area ahead" instead of the other.
+
+**On a real Meta glasses walk** (lobby, long corridor with glass offices, left turn; 90 s,
+`--hfov 70`, labelled by the walker): every announcement correct, none false. Lobby
+entered at 1.8 s and left at 29.4 s as the corridor starts (head turns in between don't end
+it); entrance left at 31 s (the lactation room door); hallway right at 64 s (Biointerfaces
+Institute); hallway left at 73 s (where the walk turns); entrance right at 84 s (the lab door).
+Missed: a narrow path at 50 s mostly hidden by a pillar. Corridor width measured 1.6-2.1 m.
+Before the vanishing-point fit, the same walk gave 1 correct, 9 false and 5 missed (cluttered
+walls tilted the fit and made the corridor read 2-8 m wide).
 
 What the geometry implies on the glasses (about +-35 deg to each side in portrait): a side
 hallway is only seen obliquely, from about 3 m before it until about 1.4 m before it, so it

@@ -110,6 +110,7 @@ class Scan:
     shift: float = 0.0                  # the depth model's shift, in units of the floor slope
     shift_source: str = ""
     shift_estimate: Optional[float] = None   # this frame's own estimate from the walls
+    vp: Optional[tuple] = None          # vanishing point (u, row fraction), if found
 
 
 def _tol(Z):
@@ -181,17 +182,71 @@ def _line_fit(u, e, side, a, delta, prior_c=None, min_inliers=5, min_span=0.12,
     return float(s), float(q), full
 
 
+def vanishing_point(g, max_u, u):
+    """The corridor's vanishing point: centre of the farthest region of the (smoothed) map.
+    -> (u, row fraction) or None when there's no single compact far region (open areas,
+    facing a wall)."""
+    sm = cv2.GaussianBlur(g, (5, 5), 0)
+    lo, hi = float(sm.min()), float(np.percentile(sm, 99))
+    mask = (sm <= lo + 0.06 * (hi - lo)).astype(np.uint8)
+    n, lab, stats, cent = cv2.connectedComponentsWithStats(mask)
+    r0, c0 = np.unravel_index(np.argmin(sm), sm.shape)
+    k = lab[r0, c0]
+    w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
+    if w > 0.35 * g.shape[1] or h > 0.45 * g.shape[0]:
+        return None
+    cx, cy = cent[k]
+    ui = float(np.interp(cx, np.arange(len(u)), u))
+    if abs(ui) > max_u or not (0.2 <= cy / g.shape[0] <= 0.8):
+        return None
+    return ui, float(cy / g.shape[0])
+
+
+def _wall_through(u, e, side, uv, delta, a, prior_c=None, min_inliers=5, max_offset=4.5):
+    """A wall parallel to the corridor passes through the vanishing point (uv, -delta) in
+    (u, inverse depth): e + delta = s (u - uv). One parameter, so cabinets, door frames and
+    gaps can't tilt it. -> (s, inlier mask) or None."""
+    sgn = -1 if side == "left" else 1
+    idx = np.where((np.sign(u - uv) == sgn) & (np.abs(u - uv) > 0.06) & (e > 0.08 * e.max()))[0]
+    if len(idx) < min_inliers:
+        return None
+    uu, ee = u[idx] - uv, e[idx] + delta
+    du = float(np.median(np.diff(np.sort(u))))
+    cover = du / np.maximum(np.abs(uu), 0.2) ** 2
+    tol = 0.05 * np.abs(ee) + 0.01 * np.abs(ee).max()
+    best = None
+    for s in ee / uu:
+        if sgn * s <= 0 or not (0.25 <= a / s * sgn <= max_offset):
+            continue
+        inl = np.abs(ee - s * uu) <= tol
+        score = float(cover[inl].sum())
+        if prior_c is not None and abs(a / s - prior_c) <= 0.25 * abs(prior_c) + 0.15:
+            score *= 2
+        if best is None or (score, int(inl.sum())) > best[0]:
+            best = ((score, int(inl.sum())), inl)
+    if best is None or best[1].sum() < min_inliers:
+        return None
+    inl = best[1]
+    s = float(np.sum(ee[inl] * uu[inl]) / np.sum(uu[inl] ** 2))   # LS through the point
+    full = np.zeros(len(u), bool)
+    full[idx[inl]] = True
+    return s, full, float(cover[inl].sum())
+
+
 def scan_from_depth(inv, K, image_size, eye_height=1.6, n_cols=64, max_range=25.0,
                     floor_rows=(0.72, 1.0), floor_cols=0.3, prior=None,
                     max_angle=30.0, max_offset=4.5, min_shift_span=0.3):
     """Relative inverse depth (any resolution) + the image's K and (width, height) -> Scan.
 
-    The model's shift is unknown. Both walls are straight lines in (u, inverse depth) and
-    meet at the vanishing point, where the true inverse depth is 0: where they cross gives the
-    shift (`Scan.shift_estimate`). `prior` = {"shift": ..., "c": {"left": .., "right": ..}}
-    from recent frames (see IntersectionWatcher): its shift is used when given, since one
-    frame's crossing can be thrown off by a cabinet face; without one, this frame's crossing,
-    else the farthest point counts as infinitely far."""
+    The model's shift is unknown. Walls parallel to the corridor are straight lines in
+    (u, inverse depth) through the vanishing point, where the true inverse depth is 0. So
+    the vanishing point (the centre of the farthest region) and one cleanly seen wall give
+    the shift; walls are then fitted through the vanishing point, which cabinets and door
+    frames can't tilt. `prior` = {"shift": ..., "c": {"left": .., "right": ..}} from recent
+    frames (see IntersectionWatcher) is used when this frame gives no estimate, and its
+    shift steadies a frame's own estimate. Without a vanishing point (open areas), the two
+    walls' crossing stands in for it; failing that, the farthest point counts as infinitely
+    far."""
     prior = prior or {}
     W, H = image_size
     nr = max(8, int(round(n_cols * inv.shape[0] / inv.shape[1])))
@@ -207,9 +262,9 @@ def scan_from_depth(inv, K, image_size, eye_height=1.6, n_cols=64, max_range=25.
     fit = _floor_fit(e, rows, c0, c1)
     if fit is None:
         return Scan(False, "no floor at the bottom of the image")
+    mmax = math.tan(math.radians(max_angle))
+    vp = vanishing_point(g, mmax, u)
     delta, source, estimate = 0.0, "farthest point", None
-    # the model's own shift (its output for infinitely far), in units of the floor slope, is
-    # what stays put from frame to frame; delta is relative to this frame's farthest point
     if prior.get("shift") is not None:
         delta, source = p1 - prior["shift"] * fit[0], "recent frames"
     lines = {}
@@ -219,7 +274,12 @@ def scan_from_depth(inv, K, image_size, eye_height=1.6, n_cols=64, max_range=25.
             return Scan(False, "no floor at the bottom of the image")
         kf, rh = fit
         if not (-0.1 * nr <= rh <= 0.7 * nr):
-            return Scan(False, f"implausible horizon row {rh / nr:.2f}")
+            if vp is None:
+                return Scan(False, f"implausible horizon row {rh / nr:.2f}")
+            rh = vp[1] * nr
+            kf = float(np.median((e[rows, c0:c1].mean(axis=1) + delta) / np.maximum(rows - rh, 1)))
+            if kf <= 0:
+                return Scan(False, "no floor at the bottom of the image")
         a = kf * eye_height * fy           # e + delta = a / Z on any surface
         r0, r1 = int(math.floor(rh - 0.035 * nr)), int(math.ceil(rh + 0.01 * nr)) + 1
         band = e[max(0, r0):min(nr, r1)]
@@ -228,16 +288,32 @@ def scan_from_depth(inv, K, image_size, eye_height=1.6, n_cols=64, max_range=25.
         ec = np.median(band, axis=0)
         lines = {sd: _line_fit(u, ec, sd, a, delta, prior.get("c", {}).get(sd),
                                max_offset=max_offset) for sd in ("left", "right")}
-        # only walls seen over a long stretch extrapolate well to the vanishing point
-        long_ = [ln for ln in lines.values() if ln and np.ptp(u[ln[2]]) >= min_shift_span]
+        long_ = {sd: ln for sd, ln in lines.items() if ln and np.ptp(u[ln[2]]) >= min_shift_span}
+        # candidate vanishing points (u, shift): each long wall extended to the farthest
+        # region's centre, and the two walls' crossing. Keep the one through which both
+        # walls fit best: a cluttered wall (cabinets, door frames) gives a bad line, and
+        # off-centre the near wall is so steep that a small error in u moves the shift a lot
+        cands = []
+        if vp is not None:
+            cands += [(vp[0], -(ln[0] * vp[0] + ln[1])) for ln in long_.values()]
         if len(long_) == 2:
             (sl, ql, _), (sr, qr, _) = lines["left"], lines["right"]
             um = (qr - ql) / (sl - sr)
-            d = -(sl * um + ql)
-            if abs(um) <= math.tan(math.radians(max_angle)) and abs(d) <= 0.5 * ec.max():
-                estimate = float(d)
-                if prior.get("shift") is None:
-                    delta, source = float(d), "walls"
+            if abs(um) <= mmax:
+                cands.append((float(um), -(sl * um + ql)))
+        d = None
+        if cands:
+            def support(c):
+                fits = [_wall_through(u, ec, sd, c[0], c[1], a, max_offset=max_offset)
+                        for sd in ("left", "right")]
+                return sum(f[2] for f in fits if f)
+            uv, d = max(cands, key=support)
+            if vp is not None or len(cands) == 1:
+                vp = (float(uv), vp[1] if vp else rh / nr)
+        if d is not None and abs(d) <= 0.5 * ec.max():
+            estimate = float(d)
+            if prior.get("shift") is None:
+                delta, source = float(d), "walls"
         if source == "recent frames" or it == 1:
             break
     et = ec + delta
@@ -245,30 +321,42 @@ def scan_from_depth(inv, K, image_size, eye_height=1.6, n_cols=64, max_range=25.
     Z = np.where(far, max_range, a / np.maximum(et, 1e-9))
     X = Z * u
     walls = {}
-    mmax = math.tan(math.radians(max_angle))
-    for sd, ln in lines.items():
-        walls[sd] = None
-        if not ln:
-            continue
-        sgn = -1 if sd == "left" else 1
-        inl = ln[2] & ~far
-        if inl.sum() < 4:
-            continue
-        m, c = np.polyfit(Z[inl], X[inl], 1)
-        if abs(m) > mmax or not (0.25 <= sgn * c <= max_offset):
-            continue
-        walls[sd] = Wall(sd, float(m), float(c), inl, int(inl.sum()))
-    if walls["left"] and walls["right"]:       # parallel walls: share the angle
-        wl, wr = walls["left"], walls["right"]
-        m = (wl.m * wl.n + wr.m * wr.n) / (wl.n + wr.n)
-        for w in (wl, wr):
-            w.c = float(np.median(X[w.inliers] - m * Z[w.inliers]))
-            w.m = float(m)
-    mid = np.abs(u) < 0.1
+    if vp is not None:
+        for sd in ("left", "right"):
+            fitc = _wall_through(u, ec, sd, vp[0], delta, a, prior.get("c", {}).get(sd),
+                                 max_offset=max_offset)
+            walls[sd] = None
+            if fitc:
+                sgn = -1 if sd == "left" else 1
+                inl = fitc[1] & ~far
+                c = a / fitc[0]
+                if inl.sum() >= 4 and 0.25 <= sgn * c <= max_offset:
+                    walls[sd] = Wall(sd, float(vp[0]), float(c), inl, int(inl.sum()))
+    else:
+        for sd, ln in lines.items():
+            walls[sd] = None
+            if not ln:
+                continue
+            sgn = -1 if sd == "left" else 1
+            inl = ln[2] & ~far
+            if inl.sum() < 4:
+                continue
+            m, c = np.polyfit(Z[inl], X[inl], 1)
+            if abs(m) > mmax or not (0.25 <= sgn * c <= max_offset):
+                continue
+            walls[sd] = Wall(sd, float(m), float(c), inl, int(inl.sum()))
+        if walls["left"] and walls["right"]:       # parallel walls: share the angle
+            wl, wr = walls["left"], walls["right"]
+            m = (wl.m * wl.n + wr.m * wr.n) / (wl.n + wr.n)
+            for w in (wl, wr):
+                w.c = float(np.median(X[w.inliers] - m * Z[w.inliers]))
+                w.m = float(m)
+    mid = np.abs(u - (vp[0] if vp else 0.0)) < 0.1
     return Scan(True, u=u, X=X, Z=Z, far=far, walls=walls, horizon=float(rh / nr),
                 center_Z=float(np.median(Z[mid])) if mid.any() else float("nan"),
                 shift=float((p1 - delta) / kf), shift_source=source,
-                shift_estimate=None if estimate is None else float((p1 - estimate) / kf))
+                shift_estimate=None if estimate is None else float((p1 - estimate) / kf),
+                vp=vp)
 
 
 # ---------------------------------------------------------------- 4: gaps
@@ -405,7 +493,7 @@ class PlaceTracker:
     """Gap tracks per side, the open-area state, and events to announce."""
 
     def __init__(self, hall_min=1.4, entrance_min=0.6, open_side_min=5.0, min_measures=3,
-                 open_enter_s=2.0, open_leave_s=2.0, open_free=2.5, open_near_frac=0.15,
+                 open_enter_s=2.0, open_leave_s=4.0, open_free=2.5, open_near_frac=0.15,
                  forget_s=1.5, wall_ahead_max=10.0, measure_range=3.0,
                  open_side_hold=1.5, cross_hold=0.8, open_side_depth=2.0):
         self.hall_min, self.entrance_min, self.open_side_min = hall_min, entrance_min, open_side_min
@@ -459,14 +547,20 @@ class PlaceTracker:
                     best = (d, tr)
         return best[1] if best else None
 
+    def _long_open(self, tr):
+        return tr.span >= 0.6 * self.open_side_min and tr.depth >= self.open_side_depth
+
     def _classify(self, tr):
         w = tr.width()
-        if (w is not None and w >= self.open_side_min and len(tr.widths) >= 2) or (
-                tr.span >= self.open_side_min and tr.depth >= self.open_side_depth):
-            # measured end to end, or seeing deep in (not a wall behind pillars)
+        if w is not None and w >= self.open_side_min and len(tr.widths) >= 2:
+            return OPEN_SIDE        # measured end to end
+        if self._long_open(tr) and any(self._long_open(o) for o in self.tracks
+                                       if o.side != tr.side):
+            # far end not seen, but both sides open up deep at once: an open area ahead. On
+            # one side alone that's as often a wall behind clutter, or a door faced head-on
             return OPEN_SIDE
         n = len(tr.widths)
-        agree = n >= 2 and max(tr.widths[-2:]) <= 1.3 * min(tr.widths[-2:])
+        agree = n >= 2 and max(tr.widths[-2:]) <= 1.5 * min(tr.widths[-2:])
         # a side hallway is only measurable from ~3 m until it leaves the view at ~1.4 m,
         # so: 3 measurements, or 2 that agree, or whatever we have once it has left the view
         if w is None or not ((n >= self.min_measures and not tr.unsettled()) or agree

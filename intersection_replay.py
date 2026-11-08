@@ -92,11 +92,21 @@ def _kind(e):
 
 
 def score(events, labels, tol=3.0):
-    """Per kind: true positives, false positives, missed labels."""
+    """Per kind: true positives, false positives, missed labels. Inside a labelled open area,
+    re-entering it again isn't a new error, but "leaving" it is one."""
     out, used = {}, set()
+    spans = labels.get("open_area", [])
     for e in events:
+        if e["kind"] == "leave_open_area":
+            if any(a + tol < e["t"] < b - tol for a, b in spans):
+                out.setdefault("open_area", {"tp": 0, "fp": [], "missed": []})["fp"].append(
+                    round(e["t"], 1))
+            continue
         k = _kind(e)
         if k is None:
+            continue
+        if k == "open_area" and any((k, j) in used and a - tol <= e["t"] <= b
+                                    for j, (a, b) in enumerate(spans)):
             continue
         hit = None
         for j, lab in enumerate(labels.get(k, [])):
