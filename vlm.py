@@ -14,6 +14,10 @@ Prompt versions (compare them with `python vlm_eval.py`):
 Results on 80 SiGNgapore2D signs x 2 views (vlm_eval.py), v1 / v2 / v3: arrows exact
 70.9 / 75.4 / 73.8%, within 45 deg 77.2 / 84.0 / 82.9%, text recall 62.3 / 65.2 / 61.6%,
 invented entries per read 0.25 / 0.47 / 0.93.
+v1 / v2 / v4: arrows exact 70.9 / 75.4 / 74.7%, within 45 deg 77.2 / 84.0 / 83.2%, "none"
+67.3 / 81.0 / 87.5%, text recall 62.3 / 65.2 / 65.8%, annotated pictograms reported 11 / 10 /
+26%, translations returned 5 / 25 / 0; made-up entries about the same for all. v4 is the
+default. Diagonal arrows stay ~0-2% under every prompt (reported as left/right).
 Whatever the prompt, parse() drops entries without a single Latin letter or digit.
 All versions return the same entries: [{"text", "arrow"}] in the step 1 arrow vocabulary."""
 import json
@@ -76,7 +80,7 @@ _V4_RULES = """- Each destination once, in English: if the sign repeats it in ot
 PROMPT_V4 = PROMPT_V2.replace("- Copy text exactly.", _V4_RULES + "- Copy text exactly.")
 
 PROMPTS = {"v1": PROMPT, "v2": PROMPT_V2, "v3": PROMPT_V3, "v4": PROMPT_V4}
-DEFAULT_PROMPT = "v1"
+DEFAULT_PROMPT = "v4"     # chosen with vlm_eval.py, see the module docstring
 ARROWS = {"left", "right", "up", "down", "up-left", "up-right", "down-left", "down-right", "none"}
 
 

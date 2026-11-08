@@ -142,6 +142,7 @@ def main(argv=None):
     ap.add_argument("--synthetic", type=int, help="DRY RUN: N rendered signs")
     ap.add_argument("--reader", choices=("gemma", "ocr"), default="gemma")
     ap.add_argument("--model", default="gemma4:e4b"); ap.add_argument("--ollama-host")
+    ap.add_argument("--prompt", help="reader prompt version (vlm.PROMPTS); default vlm.DEFAULT_PROMPT")
     ap.add_argument("--signs", type=int, default=20)
     ap.add_argument("--angles", type=float, nargs="+", default=[0, 30, 50, 70])
     ap.add_argument("--steps", type=int, default=40)
@@ -162,7 +163,7 @@ def main(argv=None):
             ap.error("--gt and --images are required (or --synthetic N)")
         # all text signs, shuffled; the reachable ones are picked below
         signs = [s for s in select_signs(load_dataset(a.gt, a.images), 10 ** 6, a.seed) if s["text"]]
-    reader = GemmaReader(a.model, a.ollama_host) if a.reader == "gemma" else OcrProxyReader()
+    reader = GemmaReader(a.model, a.ollama_host, a.prompt) if a.reader == "gemma" else OcrProxyReader()
     model = LegibilityModel.load(a.calib)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     cache, engine = Cache(out / "cache"), ocr_engine()

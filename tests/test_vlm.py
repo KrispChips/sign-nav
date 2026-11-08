@@ -54,3 +54,16 @@ def test_parse_drops_entries_with_no_latin_text():
                                   {"text": "\u80be\u810f\u90e8 Kidney Unit", "arrow": "left"},
                                   {"text": "\u2191", "arrow": "up"}]})
     assert [e["text"] for e in parse(raw)] == ["\u80be\u810f\u90e8 Kidney Unit"]
+
+
+def test_named_pictograms_are_not_invented():
+    gt = [("EXIT", "left")]
+    read = [{"text": "Exit", "arrow": "left"}, {"text": "Toilets", "arrow": "right"},
+            {"text": "Wheelchair accessibility", "arrow": "right"}, {"text": "Steven Medlock Street", "arrow": "up"}]
+    s = score_sign(gt, read, symbols=["TOILET", "WHEELCHAIR ACCESSIBILITY"])
+    assert s["invented"] == 1 and s["symbols_found"] == [True, True]
+
+
+def test_default_prompt_is_v4():
+    import vlm
+    assert vlm.DEFAULT_PROMPT == "v4"

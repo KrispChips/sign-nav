@@ -11,7 +11,8 @@ model + prompt.
 Reported per prompt: text recall; arrow accuracy over entries whose text was read (exact,
 and within 45 degrees, e.g. up-left read as left), split by signs whose entries share one
 arrow vs point different ways, by diagonal / straight / locational ("none") arrows;
-stability (same arrow from both views); invented entries per read."""
+stability (same arrow from both views); annotated pictograms reported (TOILET = "Toilets");
+entries per read matching nothing annotated (text or pictogram) and no facility name."""
 import argparse
 import collections
 import hashlib
@@ -24,9 +25,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from entries import canonical_arrow  # noqa: E402
-from legibility.calibrate import (Cache, crop_of, load_dataset, score_read, select_signs,  # noqa: E402
-                                  text_score)
+import facilities  # noqa: E402
+from entries import canonical_arrow, normalize  # noqa: E402
+from legibility.calibrate import (Cache, crop_of, is_invented, load_dataset, score_read,  # noqa: E402
+                                  select_signs, symbol_score, text_score)
 from legibility.degrade import degrade, sample_params, sight, stable_seed  # noqa: E402
 
 ANGLE_OF = {"up": 0, "up-right": 45, "right": 90, "down-right": 135, "down": 180,
@@ -59,9 +61,20 @@ def pair_entries(gt, read):
     return pairs
 
 
-def score_sign(gt, read):
+def _is_symbol_or_facility(text, symbols):
+    """Annotated pictogram (with facility synonyms: TOILET = 'Toilets'), or any facility name."""
+    return (any(symbol_score(sym, text) >= 90 for sym in symbols)
+            or facilities.lookup(normalize(text).text) is not None)
+
+
+def score_sign(gt, read, symbols=()):
+    """gt: annotated text entries [(text, arrow)]; symbols: annotated pictogram labels.
+    'invented' leaves out pictograms named as places, which the text labels don't cover."""
     text_ok = score_read(gt, read, ignore_arrows=True)[0]
-    invented = score_read(gt, read, ignore_arrows=True)[1]
+    used = {i for i, o in enumerate(read) if not is_invented(o.get("text", ""), gt)}
+    invented = sum(1 for i, o in enumerate(read)
+                   if i not in used and not _is_symbol_or_facility(o.get("text", ""), symbols))
+    symbols_found = [any(symbol_score(sym, o.get("text", "")) >= 90 for o in read) for sym in symbols]
     mixed = len({a for _, a in gt}) > 1
     arrows = []
     for gi, a in pair_entries(gt, read):
@@ -69,7 +82,8 @@ def score_sign(gt, read):
         kind = "none" if g == "none" else "diagonal" if "-" in g else "straight"
         arrows.append({"gi": gi, "gt": g, "read": a, "exact": a == g, "close": arrow_close(a, g),
                        "kind": kind, "mixed": mixed})
-    return {"text_ok": text_ok, "invented": invented, "n_read": len(read), "arrows": arrows}
+    return {"text_ok": text_ok, "invented": invented, "n_read": len(read), "arrows": arrows,
+            "symbols_found": symbols_found}
 
 
 class Reader:
@@ -113,6 +127,8 @@ def summarize(results):
         "arrow_none": acc(a for a in arr if a["kind"] == "none"),
         "stable_across_views": (float(np.mean([len(set(v.values())) == 1 for v in two])), len(two)) if two else (None, 0),
         "invented_per_read": float(np.mean([r["score"]["invented"] for r in results])) if results else None,
+        "symbols_reported": (lambda xs: (float(np.mean(xs)), len(xs)) if xs else (None, 0))(
+            [c for r in results for c in r["score"].get("symbols_found", [])]),
     }
 
 
@@ -122,6 +138,7 @@ def report(table):
             ("arrow within 45 deg", "arrow_within_45"), ("  one-arrow signs", "arrow_one_arrow_signs"),
             ("  mixed-arrow signs", "arrow_mixed_signs"), ("  straight arrows", "arrow_straight"),
             ("  diagonal arrows", "arrow_diagonal"), ("  'none' (this place)", "arrow_none"),
+            ("pictograms reported", "symbols_reported"),
             ("same arrow both views", "stable_across_views"), ("invented entries/read", "invented_per_read")]
     print(f"{'':24}" + "".join(f"{n:>16}" for n in names))
     for label, key in rows:
@@ -141,7 +158,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gt", required=True)
     ap.add_argument("--images", required=True)
-    ap.add_argument("--prompts", nargs="+", default=["v1", "v2", "v3"])
+    ap.add_argument("--prompts", nargs="+", default=["v1", "v4"])
     ap.add_argument("--model", default="gemma4:e4b")
     ap.add_argument("--ollama-host")
     ap.add_argument("--signs", type=int, default=80, help="text signs (same order as calibration)")
@@ -167,7 +184,8 @@ def main(argv=None):
                 entries, hit = rd(crop, cache)
                 calls += not hit
                 results[v].append({"sign": sign["id"], "view": angle, "read": entries,
-                                   "score": score_sign(sign["text"], entries)})
+                                   "score": score_sign(sign["text"], entries,
+                                                       [t for t, _ in sign["symbol"]])})
         print(f"[{n}/{len(signs)}] {sign['id']}  ({calls} new reads)", flush=True)
     table = {f"{v}" + ("" if a.model == "gemma4:e4b" else f"@{a.model}"): summarize(r) for v, r in results.items()}
     Path(a.out).write_text(json.dumps({"model": a.model, "table": table, "results": results}, indent=1))

@@ -708,6 +708,7 @@ def main(argv=None):
     r.add_argument("--synthetic", type=int, help="DRY RUN: use N rendered signs instead of the dataset")
     r.add_argument("--reader", choices=("gemma", "ocr"), default="gemma")
     r.add_argument("--model", default="gemma4:e4b")
+    r.add_argument("--prompt", help="reader prompt version (vlm.PROMPTS); default vlm.DEFAULT_PROMPT")
     r.add_argument("--ollama-host")
     r.add_argument("--signs", type=int, default=80, help="text signs to use (all symbol-only signs are added)")
     r.add_argument("--scales", type=int, default=8)
@@ -731,7 +732,7 @@ def main(argv=None):
             if not (a.gt and a.images):
                 ap.error("--gt and --images are required (or --synthetic N for a dry run)")
             signs = select_signs(load_dataset(a.gt, a.images), a.signs, a.seed)
-        reader = GemmaReader(a.model, a.ollama_host) if a.reader == "gemma" else OcrProxyReader()
+        reader = GemmaReader(a.model, a.ollama_host, a.prompt) if a.reader == "gemma" else OcrProxyReader()
         path = run_experiment(signs, reader, a.out, a.angles, log_scales(a.scales, a.smallest), a.variants)
         print(f"samples: {path}\nnext: python -m legibility.calibrate fit --samples {path}")
     else:

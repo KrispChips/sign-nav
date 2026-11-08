@@ -261,6 +261,14 @@ arrow can serve several lines, "none" for labels of this place incl. floor marke
 ```powershell
 python vlm_eval.py --gt data\SiGNgapore2D\gt\gt_annotation.json --images data\SiGNgapore2D\images --prompts v1 v2 v3 --cache calib_runs\v1\cache
 ```
+Result (80 signs x 2 views): v4 is the default. v1 / v2 / v4: arrows exact 70.9 / 75.4 /
+74.7%, within 45 deg 77.2 / 84.0 / 83.2%, "none" 67.3 / 81.0 / 87.5%, text recall 62.3 / 65.2 /
+65.8%, annotated pictograms reported 10.6 / 9.7 / 25.5%, translations returned 5 / 25 / 0.
+v4's extra unmatched entries are mostly real unannotated text (distances, "AED") and
+pictogram names; genuinely made-up ones ("Steven Medicine Center") are as rare as with v1.
+Not solved by prompting: diagonal arrows (~0-2% for every prompt, reported as left/right)
+and signs whose entries point different ways (~73%).
+
 It reads each calibration sign at its closest view from two angles (the same views as the
 calibration run, so v1 comes from its cache), and prints text recall, arrow accuracy (exact and
 within 45 degrees), split by one-arrow vs mixed-arrow signs, straight / diagonal / "none", the
