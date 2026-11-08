@@ -90,8 +90,12 @@ def main():
     ap.add_argument("--no-intersections", action="store_true", help="skip opening detection")
     ap.add_argument("--depth-model", help="ONNX depth model (default: download Depth Anything V2 small)")
     ap.add_argument("--depth-long-side", type=int, default=518, help="depth input size, multiple of 14")
-    ap.add_argument("--open-thr", type=float, default=0.55, help="side farness needed to count as open")
-    ap.add_argument("--close-thr", type=float, default=0.40, help="side farness below which it closes")
+    ap.add_argument("--eye-height", type=float, default=1.6,
+                    help="camera height above the floor (m): sets the scale of all distances")
+    ap.add_argument("--hall-min", type=float, default=1.4,
+                    help="gap width (m) from which a side opening is a hallway, not an entrance")
+    ap.add_argument("--speak-entrances", action="store_true",
+                    help="also speak doorways (always shown in the video and logged)")
     ap.add_argument("--legibility", default="legibility_calib.json",
                     help="calibration from legibility.calibrate: read a sign when its text is legible")
     ap.add_argument("--no-legibility", action="store_true",
@@ -104,8 +108,7 @@ def main():
 
     from detector import DISTRACTORS, SignDetector   # heavy imports after arg parsing
     from vlm import SignReader
-    from intersection import (DepthEstimator, IntersectionDetector, IntersectionWatcher,
-                              resolve_model)
+    from intersection import DepthEstimator, IntersectionWatcher, PlaceTracker, resolve_model
     from annotate import ChatLog, VideoOut, draw_scene
 
     imu = (ImuTrack(a.imu, a.imu_offset, a.gyro_sign) if a.imu else
@@ -139,7 +142,8 @@ def main():
     speaker = Announcer(enabled=not a.no_tts)
     watcher = None if a.no_intersections else IntersectionWatcher(
         DepthEstimator(resolve_model(a.depth_model), long_side=a.depth_long_side),
-        IntersectionDetector(on_thresh=a.open_thr, off_thresh=a.close_thr))
+        PlaceTracker(hall_min=a.hall_min), eye_height=a.eye_height,
+        speak_entrances=a.speak_entrances)
     pool = ThreadPoolExecutor(max_workers=1)   # VLM never blocks the camera loop
     pending = {}
     os.makedirs(a.debug_dir, exist_ok=True)
@@ -214,16 +218,18 @@ def main():
         heading.update(frame.yaw_deg, frame.t)
         t0 = time.time()
         if watcher:
-            res, sentence = watcher(frame, heading)
+            res, said = watcher(frame, heading)
             if res is not None:
                 ilog.write(json.dumps(dict(t=frame.t, yaw=frame.yaw_deg, heading=heading.value,
-                                           said=sentence, **res)) + "\n")
+                                           said=[x for x, _ in said], **res)) + "\n")
                 ilog.flush()
-            if sentence:
-                cv2.imwrite(os.path.join(a.debug_dir, f"opening_{frame.t:07.1f}s.jpg"), frame.image)
-                speaker.say(sentence, dedupe=False)   # the detector has its own cooldown
-                chat.opening(frame.t, sentence, res)
-                flash_until, flash = frame.t + 1.0, res["event"].replace("_", " ").upper()
+            for sentence, event in said:
+                kind = event["kind"]
+                cv2.imwrite(os.path.join(a.debug_dir, f"{kind}_{frame.t:07.1f}s.jpg"), frame.image)
+                if sentence:
+                    speaker.say(sentence, dedupe=False)   # the tracker announces each place once
+                chat.place(frame.t, event, spoken=bool(sentence))
+                flash_until, flash = frame.t + 1.0, event["sentence"].rstrip(".").upper()
         dets = detector(frame.image)
         for tr in tracker.update(frame, dets):
             submit(tr, frame.t)
@@ -251,6 +257,8 @@ def main():
                 info += f"  yaw={frame.yaw_deg:+.0f} heading={heading.value:+.0f}"
             if watcher and watcher.last is None:
                 info += "  depth paused: head turned"
+            elif watcher and not watcher.last.get("ok", True):
+                info += f"  depth: {watcher.last['reason']}"
             scene = draw_scene(frame.image, tracker.tracks, watcher.last if watcher else None,
                                frame.t, info, flash if frame.t <= flash_until else None)
             vis = video.compose(scene, chat) if video else scene

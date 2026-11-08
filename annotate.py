@@ -66,12 +66,18 @@ class ChatLog:
             f"• {e['text']}" + ("" if e["arrow"] == "none" else f"  (arrow: {e['arrow']})")
             for e in entries]
 
-    def opening(self, t, sentence, res):
-        e = res["ema"]
-        self.items.append(dict(t=t, color=OPEN_COL, title="Intersection",
-                               status=res["event"].replace("_", " "), thumb=None,
-                               lines=[f"“{sentence}”",
-                                      f"L {e['left']:.2f}   C {e['center']:.2f}   R {e['right']:.2f}"]))
+    def place(self, t, event, spoken=True):
+        """A hallway / entrance / open area event from intersection.IntersectionWatcher."""
+        kind = event["kind"]
+        title = {"hallway": "Hallway", "entrance": "Entrance", "open_side": "Open side",
+                 "open_ahead": "Open area", "open_area": "Open area",
+                 "leave_open_area": "Open area"}.get(kind, kind)
+        details = []
+        if event.get("width"):
+            details.append(f"gap {event['width']:.1f} m wide, ~{event.get('z', 0):.1f} m ahead")
+        self.items.append(dict(t=t, color=OPEN_COL if spoken else MUTED, title=title,
+                               status="said" if spoken else "shown only", thumb=None,
+                               lines=[f"“{event.get('sentence', '')}”"] + details))
 
 
 def _wrap(draw, text, font, width):
@@ -142,20 +148,45 @@ def draw_scene(image, tracks, inter, t, info, flash=None, height=720):
     w = vis.shape[1]
     cv2.rectangle(vis, (0, 0), (w, 30), (0, 0, 0), -1)
     cv2.putText(vis, info, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1, cv2.LINE_AA)
-    if inter is not None:   # bottom strip: smoothed farness per side, like the notebook's plot
-        cv2.rectangle(vis, (0, height - 34), (w, height), (0, 0, 0), -1)
-        bw = (w - 40) // 3
-        for i, side in enumerate(("left", "center", "right")):
-            x0, v = 10 + i * (bw + 10), inter["ema"][side]
-            cv2.rectangle(vis, (x0, height - 26), (x0 + bw, height - 8), (70, 70, 70), -1)
-            cv2.rectangle(vis, (x0, height - 26), (x0 + int(bw * v), height - 8),
-                          (0, 140, 255) if side != "center" else (170, 170, 170), -1)
-            cv2.putText(vis, f"{side[0].upper()} {v:.2f}", (x0 + 4, height - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, WHITE, 1, cv2.LINE_AA)
+    if inter is not None and inter.get("ok"):
+        draw_topdown(vis, inter)
     if flash:
         cv2.rectangle(vis, (0, 0), (w - 1, height - 1), RED, 8)
         cv2.putText(vis, flash, (16, 64), cv2.FONT_HERSHEY_SIMPLEX, 1.0, RED, 2, cv2.LINE_AA)
     return vis
+
+
+KIND_COL = {"hallway": (0, 200, 0), "entrance": (0, 200, 255), "open_side": (255, 160, 60)}
+
+
+def draw_topdown(vis, res, size=(150, 190), x_range=4.0, z_range=12.0):
+    """Bird's-eye inset (bottom left): the scan points, fitted walls, and gaps, with the
+    walker at the bottom centre looking up. Grey = scan, white = walls, colours = gaps
+    (green hallway, yellow entrance, blue open side, red not decided yet)."""
+    w, h = size
+    H = vis.shape[0]
+    x0, y0 = 8, H - h - 8
+    roi = vis[y0:y0 + h, x0:x0 + w]
+    roi[:] = (0.35 * roi).astype(roi.dtype)
+    px = lambda X, Z: (int(w / 2 + X / x_range * w / 2), int(h - 6 - Z / z_range * (h - 12)))  # noqa: E731
+    for X, Z in zip(res["scan"]["x"], res["scan"]["z"]):
+        if Z < z_range and abs(X) < x_range:
+            cv2.circle(roi, px(X, Z), 2, (170, 170, 170), -1)
+    for side, wl in res["walls"].items():
+        if wl:
+            cv2.line(roi, px(wl["c"], 0), px(wl["m"] * z_range + wl["c"], z_range), WHITE, 1)
+    kinds = {int(k): v for k, v in res.get("tracks", {}).items()}
+    for g in res["gaps"]:
+        wl = res["walls"][g["side"]]
+        if not wl:
+            continue
+        col = KIND_COL.get(kinds.get(g.get("track")), RED)
+        za, zb = g["z"][0], min(g["z"][1], z_range)
+        cv2.line(roi, px(wl["m"] * za + wl["c"], za), px(wl["m"] * zb + wl["c"], zb), col, 3)
+    cv2.drawMarker(roi, px(0, 0), (0, 165, 255), cv2.MARKER_TRIANGLE_UP, 10, 2)
+    label = "OPEN AREA" if res.get("in_open") else (
+        f"width {res['width']:.1f} m" if res.get("width") else "")
+    cv2.putText(roi, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, WHITE, 1, cv2.LINE_AA)
 
 
 class VideoOut:

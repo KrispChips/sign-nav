@@ -23,7 +23,7 @@ undistorted frame ──► Depth Anything V2 (ONNX) ──► farness profile �
 | `targets.py`, `entries.py`, `matcher.py`, `facilities.py` | target parser + sign matcher (pure Python) | No |
 | `config/buildings/*.yaml` | room numbering per building | Per building, not per device |
 | `legibility/` | when is a sign legible enough to read, and how much closer to get | Recalibrate on glasses footage |
-| `intersection.py` | depth model, farness profile, opening detector (from `geometric_intersection_detection.ipynb`) | No |
+| `intersection.py`, `intersection_replay.py` | hallways, entrances, open areas from monocular depth; offline replay/tuning | Set `--eye-height`, and `--calib`/`--hfov` |
 | `main.py` | the loop, TTS, debug logging | No |
 
 ## Setup (PC)
@@ -304,10 +304,12 @@ python main.py --source walk.mp4 --hfov 69 --no-tts --out-video annotated.mp4
 ```
 Left: the video with sign boxes (orange = still collecting sightings, green = sent to Gemma,
 red = rejected by the filter),
-the live left/center/right farness bars, and a red flash on each opening event.
+a bird's-eye inset of the depth scan (bottom left: walls in white, gaps green = hallway,
+yellow = entrance, blue = open side, red = undecided, and the measured corridor width),
+and a red flash on each hallway / entrance / open-area event.
 Right: a chat log, newest at the bottom. Each sign card shows the crop Gemma saw, "reading..."
 until it answers, then the spoken sentence and every entry with its arrow. Opening events get
-their own cards. One output frame per processed frame, so it plays at real speed.
+their own cards ("shown only" for entrances unless `--speak-entrances`). One output frame per processed frame, so it plays at real speed.
 If ffmpeg is on PATH the file is re-encoded to H.264; otherwise it stays mp4v (VLC plays it).
 Works together with `--show`, which then shows the same side-by-side view live.
 
@@ -324,21 +326,62 @@ The `--show` window draws tracks: orange = still collecting sightings, green = s
 - `rejected/trackNNNN_aK_<reason>.jpg`: every crop the filter rejected
 - `summary.json` (also printed at the end): boxes dropped by distractor labels, crops checked,
   kept by OCR, rejected by OCR, rescued by CLIP, rejected, sent to the VLM
-- `intersections.jsonl`: per frame, raw and smoothed left/center/right farness, the 24-column
-  profile, open/closed label, and for events the user-frame bearings and what was spoken
-- `opening_NNNNN.Ns.jpg`: the frame at each opening event
+- `intersections.jsonl`: per frame, the scan (x, z per column), fitted walls, corridor width,
+  gaps (distance range, width, track), events and what was spoken (or why the frame was skipped)
+- `<kind>_NNNNN.Ns.jpg`: the frame at each hallway / entrance / open-area event
 
 Knobs: `--ready-q` (lower = read earlier but from worse views), `--box-thr` (detector
 confidence), `--fps`. Wall vs facing thresholds are in `direction.mounting()`.
 
-## Intersections
+## Hallways, entrances and open areas (`intersection.py`)
 
-Openings on the left, right, or both are announced as e.g. *"Opening ahead on your left."*
-Tune `--open-thr` / `--close-thr` (and the other `IntersectionDetector` settings) on your clips
-the same way as in the notebook: the logged `ema` values are the notebook's smoothed L/C/R curves.
-`--depth-long-side` trades depth quality for speed; `--no-intersections` turns it off.
-Depth updates pause while the head is turned more than 25° from the walking direction,
-since the image edges are then not the sides of the hallway.
+What gets announced:
+| event | when | said |
+|---|---|---|
+| hallway | a gap in a side wall at least `--hall-min` (1.4 m) wide: another corridor | *"Hallway ahead on your left."*, *"Hallways cross ahead, on both sides."*, *"Hallway ends ahead; it goes left and right."* (T, wall ahead), *"Hallway turns left ahead."* |
+| entrance | a gap 0.6-1.4 m wide: a doorway | shown and logged; spoken only with `--speak-entrances` |
+| open side | a gap over 5 m long: a lounge or atrium along one side | *"Open area ahead on your right."* |
+| open area | no walls near either side, or both sides open at once | *"Open area ahead."* / *"Entering an open area."*, *"Leaving the open area."* |
+
+How: each depth map becomes a top-down scan at eye height, one point per image column, in
+metres. The floor at the bottom of the image sets the scale (it is `--eye-height` below the
+camera). The depth model's unknown offset comes from the two walls: in inverse depth each wall
+is a straight line, and the two meet at the vanishing point, where the true value is zero.
+Walls are line fits to each side (pillars and cabinets sit inside the line, recesses less
+than 0.45 m behind it, so neither is a gap); a gap is a run of columns seeing well past the
+wall, and its width along the wall is measured from the rays at its two edges. Each gap is
+tracked over frames; it's classified from close measurements (precision depends on the
+viewing angle), then announced once.
+
+On synthetic walks (`tests/corridor_world.py`: doorways into rooms, side hallways 2-3 m wide,
+a crossing, a T, pillars + recesses + a cabinet, a lounge, a lobby; with depth noise, head
+sway, walking off-centre, head pitch, a wide landscape lens, the wrong eye height):
+188/192 walks give exactly the expected announcements; the misses are T junctions passed
+off-centre, where only one side gets announced.
+
+What the geometry implies on the glasses (about +-35 deg to each side in portrait): a side
+hallway is only seen obliquely, from about 3 m before it until about 1.4 m before it, so it
+is announced shortly before you reach it, from 2-3 measurements. At ~1.4 processed frames/s
+(the full pipeline on the PC) that's one or two; the depth model alone runs much faster, so
+for live use run it on every frame (see Known limits).
+
+Not handled by depth: **glass**. The depth model sees through glass walls and windows, so a
+glass office front looks like a gap (an entrance or an open side). That needs an image cue.
+
+Tuning on a recorded walk without the video, with `intersection_replay.py`:
+```powershell
+python intersection_replay.py dump --source walk.mp4 --hfov 69 --out walk_depth.npz   # PC, once
+python intersection_replay.py replay walk_depth.npz --sheet events.jpg --video replay.mp4
+python intersection_replay.py replay walk_depth.npz --labels walk_labels.json
+```
+The dump (~15 MB for 90 s) holds small depth maps and thumbnails; replays take seconds
+and need no GPU. Labels are times in the video, e.g.
+`{"hallway": [[31.5, "right"]], "entrance": [[40, "left"]], "open_area": [[0, 12]], "open_side": [[65, "right"]]}`;
+`replay` prints correct / false / missed per kind. Knobs: `--eye-height`, `--hall-min`,
+and the `PlaceTracker` / `find_gaps` defaults.
+
+Depth updates pause while the head is turned more than 25 deg from the walking direction (needs
+the IMU), since the image edges are then not the sides of the hallway.
 
 ## Moving to the glasses
 
@@ -349,8 +392,11 @@ and keep everything else. Hook `Announcer.say()` into your navigation stack's sp
 ## Known limits
 
 - Heading = smoothed head yaw. If your nav stack has a better body heading, use it in `Heading`.
-- Intersections: left/right/both openings only. No T vs four-way, no wall-ahead detection
-  (relative depth always calls the farthest thing "far"). Open doors can look like openings.
+- Hallway detection: glass walls look like openings; widths scale with `--eye-height` and the
+  camera's FOV (calibrate the glasses, or set `--hfov` right); a person stopping or turning
+  their head mid-gap (without IMU) can split one gap into two; T junctions passed off-centre
+  may only get one side announced. Depth runs in the same loop as Grounding DINO, so at
+  ~1.4 frames/s a side hallway gets 1-2 measurements: run depth on every frame for live use.
 - The head-turn pause only covers glances. A turn held longer than about a second becomes the
   new walking direction, so detection resumes.
 - Up/down arrows on wall-mounted signs are ambiguous by convention; they're announced as such.

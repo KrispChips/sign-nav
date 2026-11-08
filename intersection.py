@@ -1,19 +1,37 @@
-"""Hallway opening (intersection) detection from monocular depth. No training.
+"""Hallways, entrances and open areas from monocular depth. No training.
 
-Ported from geometric_intersection_detection.ipynb (sections 2-3). Each frame goes through
-Depth Anything V2 (ONNX), the depth map is collapsed into a left-to-right "farness" profile
-across the middle of the image, and a side counts as OPEN when its edge of the profile stays
-far for long enough. One event fires per new opening.
+Each frame's relative depth map is turned into a top-down scan at eye height, and the scan
+is read like a floor plan:
 
-Detects openings on the left, the right, or both. It does NOT tell a T from a four-way or
-detect a wall ahead: with relative depth the farthest thing in view always looks "far".
+1. Scale. Depth Anything gives inverse depth up to an unknown scale and shift. The shift is
+   taken from the farthest part of the frame; the scale from the floor at the bottom of the
+   image, which lies `eye_height` below the camera (its inverse depth grows linearly with
+   the image row below the horizon). The horizon row comes out of the same fit.
+2. Scan. The horizon band of each column (eye height, so through doorways, above most
+   furniture) gives one point per column: forward distance Z and lateral offset X, in metres.
+3. Walls. A straight line is fitted to each side's points (RANSAC, so pillars, people and
+   gaps are outliers). Pillars and cabinets sit inside the wall line and are ignored.
+   Recesses (closed doors, alcoves) are less than `beyond_m` behind it and count as wall.
+4. Gaps. Columns that see well past the wall line are gaps in the wall. A gap's width
+   along the wall comes from the rays at its two edges, so it is a length in metres:
+     hallway   width >= hall_min (1.4 m)     two corridors meeting
+     entrance  entrance_min .. hall_min       a doorway into a room
+     open side width >= open_side_min (5 m)   e.g. a lounge or atrium along one side
+5. Open area. No walls near either side and little nearby: announced once on entry
+   ("Entering an open area.") and once on leaving. Gaps aren't announced inside it.
 
-Tied into the sign pipeline:
-- runs on the same undistorted frames, so `--calib` applies here too
-- camera left/right is turned into walker left/right with the IMU heading (see `phrase`)
-- updates pause while the head is turned away from the walking direction, because then the
-  edges of the image are not the sides of the hallway"""
+Geometry notes. The glasses see about +-35 deg to each side, so a side hallway is only seen
+obliquely, from a few metres before it until about 1.5 m before it. The walker announced
+"Hallway ahead on your left" therefore gets it before reaching it. Widths scale with the
+assumed eye height and the camera's FOV (`--calib` or `--hfov`); a wrong FOV makes everything
+wider or narrower in proportion.
+
+Depth through glass looks like an opening: a glass office wall reads as an entrance or an
+open side. That needs an image cue, not depth (see README)."""
 import math
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -67,144 +85,601 @@ class DepthEstimator:
         return np.squeeze(out).astype(np.float32)
 
 
-def depth_profile(inv_depth, band=(0.35, 0.65), n_cols=24):
-    """Collapse a depth map into a left-to-right 'farness' profile (0 = nearest, 1 = farthest).
+# ---------------------------------------------------------------- 1-3: depth map -> scan + walls
 
-    The model's output has an arbitrary scale and shift, and inverse depth squashes far
-    distances together, so each pixel is replaced by its percentile rank within the frame
-    (what fraction of the frame is closer than it). Ranks are unaffected by scale, shift,
-    or any other order-preserving distortion. Then we take the median of each vertical
-    column inside a horizontal band, skipping floor and ceiling.
-    """
-    small = cv2.resize(inv_depth, (inv_depth.shape[1] // 2, inv_depth.shape[0] // 2),
-                       interpolation=cv2.INTER_AREA)
-    flat = small.ravel()
-    ranks = np.empty(flat.size, dtype=np.float32)
-    ranks[np.argsort(-flat, kind="stable")] = np.linspace(0.0, 1.0, flat.size, dtype=np.float32)
-    far = ranks.reshape(small.shape)  # larger inverse depth = closer = lower rank
-    h = far.shape[0]
-    strip = far[int(band[0] * h):int(band[1] * h)]
-    cols = np.array_split(strip, n_cols, axis=1)
-    return np.array([np.median(c) for c in cols], dtype=np.float32)
+@dataclass
+class Wall:
+    side: str
+    m: float            # X = m * Z + c  (m: the corridor's angle to the camera axis)
+    c: float            # lateral offset of the wall (m, signed)
+    inliers: np.ndarray
+    n: int
 
 
-def region_scores(profile, side_frac=0.3):
-    """Average farness over the left edge, center, and right edge of the profile."""
-    n = len(profile)
-    k = max(1, int(round(n * side_frac)))
-    return {
-        "left": float(profile[:k].mean()),
-        "center": float(profile[k:n - k].mean()),
-        "right": float(profile[n - k:].mean()),
-    }
+@dataclass
+class Scan:
+    ok: bool
+    reason: str = ""
+    u: Optional[np.ndarray] = None      # tan(bearing) per column, + = right
+    X: Optional[np.ndarray] = None      # lateral offset (m, + = right)
+    Z: Optional[np.ndarray] = None      # forward distance (m), max_range where farther
+    far: Optional[np.ndarray] = None    # True where beyond max_range
+    walls: dict = field(default_factory=lambda: {"left": None, "right": None})
+    horizon: float = float("nan")       # horizon row as a fraction of the image height
+    center_Z: float = float("nan")      # median distance straight ahead
+    shift: float = 0.0                  # the depth model's shift, in units of the floor slope
+    shift_source: str = ""
+    shift_estimate: Optional[float] = None   # this frame's own estimate from the walls
 
 
-class IntersectionDetector:
-    """Smooths side-openness scores over time and fires one event per opening.
+def _tol(Z):
+    return 0.2 + 0.03 * Z
 
-    A side counts as open only after its smoothed score stays above `on_thresh` for
-    `min_on_s` seconds, and closes when it drops below `off_thresh` (hysteresis).
-    """
 
-    def __init__(self, on_thresh=0.55, off_thresh=0.40, min_on_s=0.8, alpha=0.4, cooldown_s=4.0):
-        self.on_thresh, self.off_thresh = on_thresh, off_thresh
-        self.min_on_s, self.alpha, self.cooldown_s = min_on_s, alpha, cooldown_s
+def _floor_fit(e, rows, c0, c1):
+    """e = kf * (row - rh) on the floor rows of the central columns. -> (kf, rh) or None."""
+    vals = np.median(e[rows, c0:c1], axis=1)
+    keep = np.ones(len(rows), bool)
+    kf = q = None
+    for _ in range(3):
+        if keep.sum() < 4:
+            return None
+        A = np.stack([rows[keep], np.ones(keep.sum())], 1)
+        (kf, q), *_ = np.linalg.lstsq(A, vals[keep], rcond=None)
+        if kf <= 0:
+            return None
+        pred = kf * rows + q
+        keep = np.abs(vals - pred) <= 0.2 * np.maximum(np.abs(pred), 1e-6)
+    return (float(kf), float(-q / kf)) if keep.sum() >= 4 else None
+
+
+def _line_fit(u, e, side, a, delta, prior_c=None, min_inliers=5, min_span=0.12,
+              max_offset=4.5):
+    """Robust line e = s*u + q through one side's columns in inverse-depth space. A wall
+    parallel to the walking direction is a straight line there, e + delta = (a / c)(u - m),
+    so a candidate line's slope gives the wall's lateral offset c = a / s directly.
+    Candidates near `prior_c` (this side's wall in recent frames) count double: walls don't
+    jump between frames, while a cabinet face or a gap can win a single frame.
+    -> (s, q, inlier mask) or None."""
+    sgn = -1 if side == "left" else 1
+    # the most distant columns (the end of the corridor) carry no evidence about side walls
+    idx = np.where((np.sign(u) == sgn) & (e > 0.08 * e.max()))[0]
+    if len(idx) < min_inliers:
+        return None
+    uu, ee = u[idx], e[idx]
+    du = float(np.median(np.diff(np.sort(u)))) if len(u) > 1 else 0.03
+    cover = du / np.maximum(np.abs(uu), 0.2) ** 2     # ~ metres of wall per column / its offset
+    tol = 0.05 * np.abs(ee) + 0.01 * np.abs(ee).max()
+    best = None
+    for i in range(len(idx)):
+        for j in range(i + 1, len(idx)):
+            if abs(uu[i] - uu[j]) < min_span / 2:
+                continue
+            s = (ee[j] - ee[i]) / (uu[j] - uu[i])
+            if sgn * s <= 0 or not (0.25 <= a / s * sgn <= max_offset):
+                continue
+            q = ee[i] - s * uu[i]
+            inl = np.abs(ee - (s * uu + q)) <= tol
+            # length of wall covered, not column count: near things (a cabinet, a person)
+            # fill many columns but only a metre or two of the corridor
+            score = float(cover[inl].sum())
+            if prior_c is not None and abs(a / s - prior_c) <= 0.25 * abs(prior_c) + 0.15:
+                score *= 2
+            key = (score, int(inl.sum()))
+            if best is None or key > best[0]:
+                best = (key, inl)
+    if best is None:
+        return None
+    inl = best[1]
+    if inl.sum() < min_inliers or np.ptp(uu[inl]) < min_span:
+        return None
+    s, q = np.polyfit(uu[inl], ee[inl], 1)
+    if sgn * s <= 0:
+        return None
+    full = np.zeros(len(u), bool)
+    full[idx[inl]] = True
+    return float(s), float(q), full
+
+
+def scan_from_depth(inv, K, image_size, eye_height=1.6, n_cols=64, max_range=25.0,
+                    floor_rows=(0.72, 1.0), floor_cols=0.3, prior=None,
+                    max_angle=30.0, max_offset=4.5, min_shift_span=0.3):
+    """Relative inverse depth (any resolution) + the image's K and (width, height) -> Scan.
+
+    The model's shift is unknown. Both walls are straight lines in (u, inverse depth) and
+    meet at the vanishing point, where the true inverse depth is 0: where they cross gives the
+    shift (`Scan.shift_estimate`). `prior` = {"shift": ..., "c": {"left": .., "right": ..}}
+    from recent frames (see IntersectionWatcher): its shift is used when given, since one
+    frame's crossing can be thrown off by a cabinet face; without one, this frame's crossing,
+    else the farthest point counts as infinitely far."""
+    prior = prior or {}
+    W, H = image_size
+    nr = max(8, int(round(n_cols * inv.shape[0] / inv.shape[1])))
+    g = cv2.resize(inv.astype(np.float32), (n_cols, nr), interpolation=cv2.INTER_AREA)
+    fx, cx = K[0, 0] * n_cols / W, (K[0, 2] + 0.5) * n_cols / W - 0.5
+    fy = K[1, 1] * nr / H
+    u = (np.arange(n_cols) - cx) / fx
+    p1 = float(np.percentile(g, 1))
+    e = g - p1
+    c0 = max(0, int(round(cx - floor_cols / 2 * n_cols)))
+    c1 = min(n_cols, int(round(cx + floor_cols / 2 * n_cols)) + 1)
+    rows = np.arange(int(floor_rows[0] * nr), int(floor_rows[1] * nr))
+    fit = _floor_fit(e, rows, c0, c1)
+    if fit is None:
+        return Scan(False, "no floor at the bottom of the image")
+    delta, source, estimate = 0.0, "farthest point", None
+    # the model's own shift (its output for infinitely far), in units of the floor slope, is
+    # what stays put from frame to frame; delta is relative to this frame's farthest point
+    if prior.get("shift") is not None:
+        delta, source = p1 - prior["shift"] * fit[0], "recent frames"
+    lines = {}
+    for it in range(2):      # horizon -> walls -> shift -> horizon
+        fit = _floor_fit(e + delta, rows, c0, c1)
+        if fit is None:
+            return Scan(False, "no floor at the bottom of the image")
+        kf, rh = fit
+        if not (-0.1 * nr <= rh <= 0.7 * nr):
+            return Scan(False, f"implausible horizon row {rh / nr:.2f}")
+        a = kf * eye_height * fy           # e + delta = a / Z on any surface
+        r0, r1 = int(math.floor(rh - 0.035 * nr)), int(math.ceil(rh + 0.01 * nr)) + 1
+        band = e[max(0, r0):min(nr, r1)]
+        if band.shape[0] == 0:
+            return Scan(False, "horizon outside the image")
+        ec = np.median(band, axis=0)
+        lines = {sd: _line_fit(u, ec, sd, a, delta, prior.get("c", {}).get(sd),
+                               max_offset=max_offset) for sd in ("left", "right")}
+        # only walls seen over a long stretch extrapolate well to the vanishing point
+        long_ = [ln for ln in lines.values() if ln and np.ptp(u[ln[2]]) >= min_shift_span]
+        if len(long_) == 2:
+            (sl, ql, _), (sr, qr, _) = lines["left"], lines["right"]
+            um = (qr - ql) / (sl - sr)
+            d = -(sl * um + ql)
+            if abs(um) <= math.tan(math.radians(max_angle)) and abs(d) <= 0.5 * ec.max():
+                estimate = float(d)
+                if prior.get("shift") is None:
+                    delta, source = float(d), "walls"
+        if source == "recent frames" or it == 1:
+            break
+    et = ec + delta
+    far = et <= a / max_range
+    Z = np.where(far, max_range, a / np.maximum(et, 1e-9))
+    X = Z * u
+    walls = {}
+    mmax = math.tan(math.radians(max_angle))
+    for sd, ln in lines.items():
+        walls[sd] = None
+        if not ln:
+            continue
+        sgn = -1 if sd == "left" else 1
+        inl = ln[2] & ~far
+        if inl.sum() < 4:
+            continue
+        m, c = np.polyfit(Z[inl], X[inl], 1)
+        if abs(m) > mmax or not (0.25 <= sgn * c <= max_offset):
+            continue
+        walls[sd] = Wall(sd, float(m), float(c), inl, int(inl.sum()))
+    if walls["left"] and walls["right"]:       # parallel walls: share the angle
+        wl, wr = walls["left"], walls["right"]
+        m = (wl.m * wl.n + wr.m * wr.n) / (wl.n + wr.n)
+        for w in (wl, wr):
+            w.c = float(np.median(X[w.inliers] - m * Z[w.inliers]))
+            w.m = float(m)
+    mid = np.abs(u) < 0.1
+    return Scan(True, u=u, X=X, Z=Z, far=far, walls=walls, horizon=float(rh / nr),
+                center_Z=float(np.median(Z[mid])) if mid.any() else float("nan"),
+                shift=float((p1 - delta) / kf), shift_source=source,
+                shift_estimate=None if estimate is None else float((p1 - estimate) / kf))
+
+
+# ---------------------------------------------------------------- 4: gaps
+
+WALL, RECESS, BEYOND, INSIDE = "wall", "recess", "beyond", "inside"
+
+
+@dataclass
+class Gap:
+    side: str
+    z_near: float           # where the gap starts along the wall (forward m)
+    z_far: float
+    near_seen: bool         # False: the gap runs off the edge of the image
+    far_seen: bool          # False: it runs into the distance (end not visible yet)
+    depth: float            # how far past the wall line it sees (m)
+    cols: list = field(default_factory=list)
+    wall_c: float = 1.0     # lateral distance of this side's wall (m)
+
+    @property
+    def width(self):
+        return self.z_far - self.z_near
+
+    @property
+    def measured(self):
+        return self.near_seen and self.far_seen
+
+
+def classify_columns(scan, wall, beyond_m=0.45):
+    """Per column of this wall's side: wall / recess / beyond (a gap) / inside (an obstacle)."""
+    sgn = -1 if wall.side == "left" else 1
+    off = sgn * (scan.X - (wall.m * scan.Z + wall.c))
+    tol = _tol(scan.Z)
+    cls = np.where(off > beyond_m, BEYOND,
+                   np.where(off > tol, RECESS, np.where(off < -tol, INSIDE, WALL))).astype(object)
+    cls[scan.far] = BEYOND
+    return cls, off
+
+
+def find_gaps(scan, wall, beyond_m=0.45, gap_range=12.0, min_depth=1.0):
+    sgn = -1 if wall.side == "left" else 1
+    cls, off = classify_columns(scan, wall, beyond_m)
+    # columns of this side, from the image edge (nearest wall) toward the vanishing point
+    cols = [i for i in np.argsort(-sgn * scan.u) if np.sign(scan.u[i]) == sgn]
+
+    def z_line(uu):          # where a ray of slope uu meets the wall line
+        den = uu - wall.m
+        return wall.c / den if sgn * den > 1e-6 else math.inf
+
+    usable = [i for i in cols if z_line(scan.u[i]) <= gap_range]
+    gaps, k = [], 0
+    while k < len(usable):
+        if cls[usable[k]] != BEYOND:
+            k += 1
+            continue
+        start = k
+        while k < len(usable) and (cls[usable[k]] == BEYOND or (
+                cls[usable[k]] == INSIDE and k + 1 < len(usable) and cls[usable[k + 1]] == BEYOND)):
+            k += 1
+        run = usable[start:k]
+        near_seen = start > 0
+        if near_seen:
+            z_near = z_line((scan.u[usable[start - 1]] + scan.u[run[0]]) / 2)
+        else:
+            z_near = z_line(scan.u[run[0]])
+        deep = float(np.max(np.where(scan.far[run], 99.0, off[run]))) >= min_depth
+        zr, xr = scan.Z[run], np.abs(scan.X[run])
+        # a side hallway seen obliquely shows its far wall, which faces us (constant Z) and
+        # may be only ~0.5 m past our wall line; the wall behind a cabinet runs parallel to
+        # ours (constant X): only the first is an opening
+        facing = (len(run) >= 2 and not scan.far[run].any()
+                  and np.ptp(zr) / np.median(zr) < 0.5 * np.ptp(xr) / max(np.median(xr), 1e-6))
+        last = run[-1]
+        nxt = usable[k] if k < len(usable) else None
+        far_seen = True
+        if nxt is not None and cls[nxt] in (WALL, RECESS):
+            if scan.Z[last] - scan.Z[nxt] > 0.1 * scan.Z[nxt] + 0.1:
+                # a jump back to our wall: a door jamb or a wall end, at the edge ray
+                z_far = z_line((scan.u[last] + scan.u[nxt]) / 2)
+            else:
+                # no jump: a crease where the far wall of a side hallway meets ours; that far
+                # wall faces us, so its distance is the corner's
+                z_far = float(scan.Z[last])
+        elif facing and nxt is not None:
+            z_far = float(scan.Z[last])     # the far wall carries on across (a T junction)
+        else:
+            far_seen = False
+            z_far = z_line(scan.u[last]) if nxt is not None else gap_range
+        if not (deep or facing):
+            continue
+        gaps.append(Gap(wall.side, float(z_near), float(max(z_far, z_near)), near_seen,
+                        far_seen, float(np.median(off[run])), [int(i) for i in run],
+                        abs(wall.c)))
+    return gaps
+
+
+# ---------------------------------------------------------------- 5: over time
+
+HALLWAY, ENTRANCE, OPEN_SIDE = "hallway", "entrance", "open_side"
+OPEN_AREA, LEAVE_OPEN, OPEN_AHEAD = "open_area", "leave_open_area", "open_ahead"
+
+
+@dataclass
+class GapTrack:
+    id: int
+    side: str
+    t_first: float
+    t_last: float
+    z_near: float
+    z_far: float
+    widths: list = field(default_factory=list)
+    span: float = 0.0           # longest stretch seen, for gaps never seen whole
+    kind: Optional[str] = None
+    t_kind: float = 0.0
+    left_view: bool = False     # measured, and now its near edge is past the image edge
+    depth: float = 0.0          # deepest median view past the wall line (m)
+    announced: Optional[str] = None
+    bearing: float = 0.0        # camera bearing of its middle at the last sighting (deg)
+
+    def width(self):
+        """Median of the 3 latest (= closest, finest) measurements. If they disagree by ~2x,
+        the smallest: from a distance a room's back wall can line up with our wall and make
+        a doorway look like a hallway corner, an error that only ever over-measures."""
+        if not self.widths:
+            return None
+        w = self.widths[-3:]
+        return float(min(w)) if self.unsettled() else float(np.median(w))
+
+    def unsettled(self):
+        w = self.widths[-3:]
+        return len(w) >= 2 and max(w) > 1.8 * min(w)
+
+
+class PlaceTracker:
+    """Gap tracks per side, the open-area state, and events to announce."""
+
+    def __init__(self, hall_min=1.4, entrance_min=0.6, open_side_min=5.0, min_measures=3,
+                 open_enter_s=2.0, open_leave_s=2.0, open_free=2.5, open_near_frac=0.15,
+                 forget_s=1.5, wall_ahead_max=10.0, measure_range=3.0,
+                 open_side_hold=1.5, cross_hold=0.8, open_side_depth=2.0):
+        self.hall_min, self.entrance_min, self.open_side_min = hall_min, entrance_min, open_side_min
+        self.min_measures = min_measures
+        self.open_enter_s, self.open_leave_s = open_enter_s, open_leave_s
+        self.open_free, self.open_near_frac = open_free, open_near_frac
+        self.forget_s, self.wall_ahead_max = forget_s, wall_ahead_max
+        self.measure_range, self.open_side_hold = measure_range, open_side_hold
+        self.cross_hold, self.open_side_depth = cross_hold, open_side_depth
         self.reset()
 
     def reset(self):
-        self.ema = None
-        self.open = {"left": False, "right": False}
-        self.above_since = {"left": None, "right": None}
-        self.last_event_t = -1e9
-        self.announced = "corridor"  # last state we fired an event for
+        self.tracks, self.next_id = [], 1
+        self.in_open, self.open_hist = False, []      # (t, open-looking frame?)
+        self.open_ahead_t = -math.inf
+        self.quiet_until = {"left": -math.inf, "right": -math.inf}
 
-    def update(self, scores, t):
-        if self.ema is None:
-            self.ema = dict(scores)
+    # ---- open area
+    def _open_frame(self, scan, walls):
+        near = float(np.mean(scan.Z < 2.5))
+        free = [abs(w.c) if w else math.inf for w in walls.values()]
+        return near <= self.open_near_frac and min(free) >= self.open_free
+
+    def _update_open(self, t, looks_open):
+        self.open_hist = [(tt, v) for tt, v in self.open_hist
+                          if t - tt <= max(self.open_enter_s, self.open_leave_s)] + [(t, looks_open)]
+        span = t - self.open_hist[0][0]
+        if not self.in_open:
+            recent = [v for tt, v in self.open_hist if t - tt <= self.open_enter_s]
+            if span >= self.open_enter_s * 0.9 and np.mean(recent) >= 0.8:
+                self.in_open = True
+                return OPEN_AREA
         else:
-            for k, v in scores.items():
-                self.ema[k] = self.alpha * v + (1 - self.alpha) * self.ema[k]
+            recent = [v for tt, v in self.open_hist if t - tt <= self.open_leave_s]
+            if span >= self.open_leave_s * 0.9 and np.mean(recent) <= 0.2:
+                self.in_open = False
+                return LEAVE_OPEN
+        return None
 
-        for side in ("left", "right"):
-            s = self.ema[side]
-            if not self.open[side]:
-                if s >= self.on_thresh:
-                    if self.above_since[side] is None:
-                        self.above_since[side] = t
-                    if t - self.above_since[side] >= self.min_on_s:
-                        self.open[side] = True
-                else:
-                    self.above_since[side] = None
-            elif s < self.off_thresh:
-                self.open[side] = False
-                self.above_since[side] = None
+    # ---- gaps
+    def _associate(self, g, t):
+        best = None
+        for tr in self.tracks:
+            if tr.side != g.side or t - tr.t_last > self.forget_s:
+                continue
+            # the walker moves forward, so a gap comes closer: allow for that
+            lo, hi = tr.z_near - 1.0 - 2.0 * (t - tr.t_last), tr.z_far + 0.5
+            if g.z_near <= hi and g.z_far >= lo:
+                d = abs(g.z_near - tr.z_near)
+                if best is None or d < best[0]:
+                    best = (d, tr)
+        return best[1] if best else None
 
-        if self.open["left"] and self.open["right"]:
-            label = "opening_both"
-        elif self.open["left"]:
-            label = "opening_left"
-        elif self.open["right"]:
-            label = "opening_right"
-        else:
-            label = "corridor"
+    def _classify(self, tr):
+        w = tr.width()
+        if (w is not None and w >= self.open_side_min and len(tr.widths) >= 2) or (
+                tr.span >= self.open_side_min and tr.depth >= self.open_side_depth):
+            # measured end to end, or seeing deep in (not a wall behind pillars)
+            return OPEN_SIDE
+        n = len(tr.widths)
+        agree = n >= 2 and max(tr.widths[-2:]) <= 1.3 * min(tr.widths[-2:])
+        # a side hallway is only measurable from ~3 m until it leaves the view at ~1.4 m,
+        # so: 3 measurements, or 2 that agree, or whatever we have once it has left the view
+        if w is None or not ((n >= self.min_measures and not tr.unsettled()) or agree
+                             or (n >= 1 and tr.left_view)):
+            return None
+        if w >= self.hall_min:
+            return HALLWAY
+        if w >= self.entrance_min:
+            return ENTRANCE
+        return None
 
-        # Fire when a new opening state appears. If it appears during the cooldown,
-        # it fires as soon as the cooldown ends (as long as it's still open).
-        event = None
-        if label == "corridor":
-            self.announced = "corridor"
-        elif label != self.announced and t - self.last_event_t >= self.cooldown_s - 1e-6:
-            event = label
-            self.last_event_t = t
-            self.announced = label
-        return {"label": label, "event": event, "ema": dict(self.ema)}
+    def update(self, scan, walls, gaps, t):
+        """Returns (events, gaps_with_track_ids). Events: dicts with kind, side(s), bearing."""
+        events = []
+        ev = self._update_open(t, self._open_frame(scan, walls))
+        if ev:
+            # "Open area ahead" was just said: entering it needs no second announcement
+            events.append({"kind": ev, "quiet": ev == OPEN_AREA and t - self.open_ahead_t <= 10.0})
+        seen = []
+        for g in gaps:
+            tr = self._associate(g, t)
+            if tr is None:
+                tr = GapTrack(self.next_id, g.side, t, t, g.z_near, g.z_far)
+                self.next_id += 1
+                self.tracks.append(tr)
+            tr.t_last, tr.z_near, tr.z_far = t, g.z_near, g.z_far
+            tr.left_view = bool(tr.widths) and not g.near_seen
+            tr.depth = max(tr.depth, g.depth)
+            # precision depends on the viewing angle: measure once the gap's near edge is
+            # within measure_range x the wall's lateral distance (~18 deg off straight ahead)
+            close = g.z_near <= self.measure_range * max(g.wall_c, 0.8)
+            if g.measured and g.width >= 0.3 and close:
+                tr.widths.append(g.width)
+            if g.near_seen and close:
+                tr.span = max(tr.span, g.width)
+            zm = (g.z_near + g.z_far) / 2
+            w = walls[g.side]
+            tr.bearing = math.degrees(math.atan2(w.m * zm + w.c, zm))
+            g.track = tr.id
+            seen.append(tr)
+        self.tracks = [tr for tr in self.tracks if t - tr.t_last <= self.forget_s]
+        for tr in seen:
+            kind = self._classify(tr)
+            if kind and _rank(kind) > _rank(tr.kind):
+                tr.kind, tr.t_kind = kind, t
+        if self.in_open or t - self.open_ahead_t <= 6.0:
+            # inside an open area (or walking into one just announced) gaps aren't hallways
+            for tr in self.tracks:
+                tr.announced = tr.kind or tr.announced
+            return events, gaps
+
+        def waiting(tr):
+            # an open side waits a moment: if the other side opens too, it's "open area ahead";
+            # a hallway waits while a gap opposite it hasn't been measured yet (a crossing)
+            if tr.kind == OPEN_SIDE:
+                return t - tr.t_kind < self.open_side_hold
+            if tr.kind == HALLWAY and t - tr.t_kind < self.cross_hold:
+                return any(o.side != tr.side and o.kind is None and not o.widths
+                           and abs(o.z_near - tr.z_near) < 2.5 for o in self.tracks)
+            return False
+        for tr in self.tracks:      # alongside an open side, its pieces aren't new openings
+            if tr.announced == OPEN_SIDE:   # quiet until we're past its far end (~1.2 m/s)
+                self.quiet_until[tr.side] = max(self.quiet_until[tr.side],
+                                                t + min(tr.z_far, 15.0) / 1.2 + 1.0)
+        due = []
+        for tr in self.tracks:
+            if not tr.kind or _rank(tr.kind) <= _rank(tr.announced) or waiting(tr):
+                continue
+            if t <= self.quiet_until[tr.side] and tr.kind != OPEN_SIDE:
+                tr.announced = tr.kind
+                continue
+            due.append(tr)
+        for tr in sorted(due, key=lambda x: -_rank(x.kind)):
+            if _rank(tr.kind) <= _rank(tr.announced):      # merged into an earlier event
+                continue
+            if t <= self.quiet_until[tr.side] and tr.kind != OPEN_SIDE:
+                tr.announced = tr.kind
+                continue
+            if tr.kind == OPEN_SIDE:
+                self.quiet_until[tr.side] = t + min(tr.z_far, 15.0) / 1.2 + 1.0
+            e = {"kind": tr.kind, "side": tr.side, "track": tr.id, "width": tr.width(),
+                 "bearing": tr.bearing, "z": round((tr.z_near + tr.z_far) / 2, 2)}
+            tr.announced = tr.kind
+            if tr.kind == OPEN_SIDE:    # both sides open at once: open area ahead
+                opp = [o for o in self.tracks if o.side != tr.side and (
+                    o.kind == OPEN_SIDE or o.span >= 0.6 * self.open_side_min)]
+            else:
+                opp = [o for o in self.tracks if o.side != tr.side and abs(o.z_near - tr.z_near) < 2.5
+                       and (o.kind == tr.kind or (tr.kind == HALLWAY and o.widths and max(o.widths) >= 1.0))]
+            if opp and any(o.announced == HALLWAY for o in opp) and tr.kind == HALLWAY:
+                e["also"] = True        # the opposite side was announced a moment ago
+            elif opp:
+                e["side"] = "both"
+                for o in opp:
+                    o.kind = o.announced = tr.kind if _rank(tr.kind) > _rank(o.kind) else o.kind
+                if tr.kind == OPEN_SIDE:
+                    e["kind"] = OPEN_AHEAD
+                    self.open_ahead_t = t
+            if e["kind"] == HALLWAY:
+                e["wall_ahead"] = bool(not math.isnan(scan.center_Z)
+                                       and scan.center_Z <= self.wall_ahead_max
+                                       and scan.center_Z <= e["z"] + 3.5)
+            events.append(e)
+        return events, gaps
 
 
-def side_bearings(K, width, side_frac=0.3):
-    """Camera bearing (deg, + = right) of the middle of the left and right profile regions."""
-    fx, cx = K[0, 0], K[0, 2]
-    x_left, x_right = 0.5 * side_frac * width, (1 - 0.5 * side_frac) * width
-    return {"left": math.degrees(math.atan2(x_left - cx, fx)),
-            "right": math.degrees(math.atan2(x_right - cx, fx))}
+def _rank(kind):
+    return {ENTRANCE: 1, HALLWAY: 2, OPEN_SIDE: 3}.get(kind, 0)
 
 
-def phrase(event, rels):
-    """Sentence for an event. `rels` maps side -> bearing relative to the walking direction."""
-    sides = {"opening_left": ["left"], "opening_right": ["right"],
-             "opening_both": ["left", "right"]}[event]
-    spots = [where(rels[s]) for s in sides]
-    if len(spots) == 2:
-        if spots[0] == "ahead on your left" and spots[1] == "ahead on your right":
-            return "Openings ahead on both sides."
-        return f"Openings {spots[0]} and {spots[1]}."
-    return f"Opening {spots[0]}."
+# ---------------------------------------------------------------- phrases
+
+def phrase(event, rel=None):
+    """Sentence for an event. `rel`: bearing of the gap relative to the walking direction."""
+    k = event["kind"]
+    if k == OPEN_AREA:
+        return "Entering an open area."
+    if k == LEAVE_OPEN:
+        return "Leaving the open area."
+    if k == OPEN_AHEAD:
+        return "Open area ahead."
+    side = event.get("side")
+    if k == HALLWAY and side == "both":
+        return ("Hallway ends ahead; it goes left and right." if event.get("wall_ahead")
+                else "Hallways cross ahead, on both sides.")
+    if k == HALLWAY and event.get("also"):
+        return f"Hallway on your {side} too."
+    if k == HALLWAY and event.get("wall_ahead"):
+        return f"Hallway turns {side} ahead."
+    spot = where(rel) if rel is not None else f"on your {side}"
+    if spot == "ahead":                         # it's a side opening: keep the side
+        spot = f"ahead on your {side}"
+    return {HALLWAY: f"Hallway {spot}.", ENTRANCE: f"Entrance {spot}.",
+            OPEN_SIDE: f"Open area {spot}."}[k]
+
+
+SPOKEN = {HALLWAY, OPEN_SIDE, OPEN_AHEAD, OPEN_AREA, LEAVE_OPEN}
+
+
+def _median(values):
+    return float(np.median(values)) if len(values) >= 3 else None
 
 
 class IntersectionWatcher:
-    """Depth model + profile + detector for the main loop. Call once per Frame."""
+    """Depth model + scan + walls + gaps + tracker for the main loop. Call once per Frame."""
 
-    def __init__(self, estimator, detector, band=(0.35, 0.65), n_cols=24, side_frac=0.3,
-                 max_head_turn=25.0):
-        self.estimator, self.detector = estimator, detector
-        self.band, self.n_cols, self.side_frac = band, n_cols, side_frac
+    def __init__(self, estimator, tracker=None, eye_height=1.6, n_cols=64, max_head_turn=25.0,
+                 speak_entrances=False):
+        self.estimator = estimator
+        self.tracker = tracker or PlaceTracker()
+        self.eye_height, self.n_cols = eye_height, n_cols
         self.max_head_turn = max_head_turn
+        self.spoken = SPOKEN | ({ENTRANCE} if speak_entrances else set())
         self.last = None   # latest result, for drawing
+        # recent per-frame estimates: the depth model's shift and each wall's offset
+        self.shifts = deque(maxlen=30)
+        self.cs = {"left": deque(maxlen=8), "right": deque(maxlen=8)}
 
-    def __call__(self, frame, heading):
-        """Returns (result, sentence or None). `result` is None while the head is turned."""
+    def __call__(self, frame, heading, inv=None):
+        """Returns (result, [(sentence or None, event)]). `result` is None while paused."""
         if frame.yaw_deg is not None and abs(heading.relative(0.0, frame.yaw_deg)) > self.max_head_turn:
             self.last = None
-            return None, None
-        inv = self.estimator(frame.image)
-        prof = depth_profile(inv, self.band, self.n_cols)
-        scores = region_scores(prof, self.side_frac)
-        res = self.detector.update(scores, frame.t)
-        res.update(scores=scores, profile=[round(float(v), 3) for v in prof])
-        sentence = None
-        if res["event"]:
-            cam = side_bearings(frame.K, frame.image.shape[1], self.side_frac)
-            rels = {s: heading.relative(b, frame.yaw_deg) for s, b in cam.items()}
-            res["rels"] = rels
-            sentence = phrase(res["event"], rels)
+            return None, []
+        if inv is None:
+            inv = self.estimator(frame.image)
+        h, w = frame.image.shape[:2]
+        res, events = self.process(inv, frame.K, (w, h), frame.t)
+        said = []
+        for e in events:
+            rel = None
+            if "bearing" in e:
+                rel = heading.relative(e["bearing"], frame.yaw_deg)
+                e["rel"] = round(rel, 1)
+            sentence = phrase(e, rel)
+            e["sentence"] = sentence
+            said.append((sentence if e["kind"] in self.spoken and not e.get("quiet") else None, e))
         self.last = res
-        return res, sentence
+        return res, said
+
+    def process(self, inv, K, size, t):
+        prior = {"shift": _median(self.shifts), "c": {sd: _median(h) for sd, h in self.cs.items()}}
+        scan = scan_from_depth(inv, K, size, self.eye_height, self.n_cols, prior=prior)
+        if not scan.ok:
+            return {"ok": False, "reason": scan.reason, "in_open": self.tracker.in_open}, []
+        cur = _median(self.shifts)
+        if scan.shift_estimate is not None and (
+                cur is None or len(self.shifts) < 5
+                or abs(scan.shift_estimate - cur) <= 0.25 * abs(cur) + 0.2):
+            # once settled, outliers (a cabinet face taken for a wall) don't move it
+            self.shifts.append(scan.shift_estimate)
+        for sd, w in scan.walls.items():
+            if w is not None:
+                self.cs[sd].append(w.c)
+        walls = scan.walls
+        gaps = [g for w in walls.values() if w for g in find_gaps(scan, w)]
+        events, gaps = self.tracker.update(scan, walls, gaps, t)
+        return result_dict(scan, walls, gaps, self.tracker, events), events
+
+
+def result_dict(scan, walls, gaps, tracker, events):
+    r2 = lambda v: round(float(v), 2)   # noqa: E731
+    return {
+        "ok": True, "in_open": tracker.in_open, "horizon": r2(scan.horizon),
+        "shift": r2(scan.shift), "shift_from": scan.shift_source,
+        "center_z": r2(scan.center_Z),
+        "walls": {s: (None if w is None else {"m": r2(w.m), "c": r2(w.c), "n": w.n})
+                  for s, w in walls.items()},
+        "width": (r2(walls["right"].c - walls["left"].c)
+                  if walls["left"] and walls["right"] else None),
+        "gaps": [{"side": g.side, "z": [r2(g.z_near), r2(g.z_far)], "w": r2(g.width),
+                  "seen": [g.near_seen, g.far_seen], "depth": r2(g.depth),
+                  "track": getattr(g, "track", None)} for g in gaps],
+        "scan": {"x": [r2(v) for v in scan.X], "z": [r2(v) for v in scan.Z]},
+        "events": [{k: v for k, v in e.items()} for e in events],
+        "tracks": {tr.id: tr.kind for tr in tracker.tracks if tr.kind},
+    }
