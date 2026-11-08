@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import facilities  # noqa: E402
 from entries import normalize  # noqa: E402
 from legibility.calibrate import (Cache, GemmaReader, OcrProxyReader, crop_of, load_dataset,  # noqa: E402
                                   score_read, select_signs)
@@ -32,13 +33,38 @@ from legibility.trigger import DONE, READ, UNREADABLE, ReadTrigger  # noqa: E402
 OCR_AGREE = 80
 
 
+# Words of pictogram names the reader gives (prompt v4) that no OCR can find printed.
+PICTOGRAM_WORDS = {"WHEELCHAIR", "ACCESSIBLE", "ACCESSIBILITY", "ACCESS", "BICYCLE", "BUS",
+                   "TAXI", "CAR", "SHUTTLE", "PEDESTRIAN", "PEOPLE", "PERSON", "ICON", "PICTOGRAM"}
+
+
+def _checkable(text):
+    """Entries the OCR text can confirm: printed text, not pictograms named as places
+    ("Toilets", "Lift") or 1-2 character fragments."""
+    t = normalize(text).text
+    if len([c for c in t if c.isalnum()]) <= 2 or facilities.lookup(t):
+        return False
+    return not (set(t.split()) & PICTOGRAM_WORDS)
+
+
+def cross_check_score(entries, ocr_text):
+    """(confirmed, checkable): returned printed-text entries found in the OCR text."""
+    ocr = normalize(ocr_text or "").text
+    check = [e for e in entries if _checkable(e.get("text", ""))]
+    hits = sum(fuzz.partial_ratio(normalize(e.get("text", "")).text, ocr) >= OCR_AGREE for e in check)
+    return hits, len(check)
+
+
 def cross_check(entries, ocr_text) -> bool:
-    """Live-style read check: at least half the returned entries appear in the OCR text."""
+    """Live-style read check: at least half the returned printed-text entries appear in the
+    OCR text. Named pictograms are left out: they can't be printed, and counting them failed
+    correct reads once prompt v4 started naming pictograms."""
     if not entries:
         return False
-    ocr = normalize(ocr_text or "").text
-    hits = sum(fuzz.partial_ratio(normalize(e.get("text", "")).text, ocr) >= OCR_AGREE for e in entries)
-    return hits >= max(1, len(entries) / 2)
+    hits, n = cross_check_score(entries, ocr_text)
+    if n == 0:
+        return True     # only pictograms: nothing the OCR could confirm or contradict
+    return hits >= max(1, n / 2)
 
 
 def approach_scales(start_scale=0.06, steps=40, dwell=4):
@@ -73,6 +99,7 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
     legible = []   # per sighting, at the base threshold: could the trigger have fired by the end?
     reads, last_recall, final_recall, events = 0, 0.0, None, []
     last_text, final_text = 0.0, None
+    best_support, best = -1, None
     for k, s in enumerate(scales):
         p = sample_params(angle, s, stable_seed("approach", sign["id"], angle, k))
         scene = degrade(full, p)
@@ -86,7 +113,9 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
         entries, _ = cached_read(reader, cache, crop)
         reads += 1
         ocr = engine(crop, use_det=True, use_cls=False, use_rec=True)
-        ok = cross_check(entries, " ".join(ocr.txts or ()))
+        ocr_text = " ".join(ocr.txts or ())
+        ok = cross_check(entries, ocr_text)
+        support = cross_check_score(entries, ocr_text)[0]
         correct, halluc, _ = score_read(gt, entries, symbols, reader.ignore_arrows)
         last_recall = sum(correct) / len(gt)
         last_text = sum(score_read(gt, entries, symbols, True)[0]) / len(gt)
@@ -95,8 +124,13 @@ def simulate_sign(sign, angle, model, reader, cache, engine, scales, log=None):
         res = trig.read_result(ok)
         if ok:
             final_recall, final_text = last_recall, last_text
+        elif final_recall is None and support > best_support:
+            # no read passed yet: keep the best-supported one (knowable live), not the last
+            best_support, best = support, (last_recall, last_text)
         if res.action in (DONE, UNREADABLE):
             break
+    if final_recall is None and best is not None:
+        final_recall, final_text = best
     blocked = model.blocked_by_angle(m)
     # In range = legible in 2 of the last 3 sightings before the walk ended (or a read fired).
     in_range = reads > 0 or sum(legible[-3:]) >= 2

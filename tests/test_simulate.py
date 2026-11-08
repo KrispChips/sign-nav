@@ -30,3 +30,10 @@ def test_summary_counts_only_evaluated_signs():
     assert s["mean_reads"] == pytest.approx(0.75) and s["evaluated"] == 2
     assert s["mean_final_recall_evaluated"] == pytest.approx(0.75)
     assert s["blocked"] == 1 and s["out_of_range"] == 1
+
+
+def test_cross_check_ignores_named_pictograms():
+    entries = [{"text": "Room 214"}, {"text": "Toilets"}, {"text": "Lift"}, {"text": "Wheelchair access"}]
+    assert cross_check(entries, "ROOM 214")            # 1 of 1 printed entries confirmed
+    assert not cross_check([{"text": "Cafeteria"}, {"text": "Toilets"}], "ROOM 214")
+    assert cross_check([{"text": "Toilets"}], "")      # pictograms only: nothing to contradict
