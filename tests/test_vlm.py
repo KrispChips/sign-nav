@@ -67,3 +67,21 @@ def test_named_pictograms_are_not_invented():
 def test_default_prompt_is_v4():
     import vlm
     assert vlm.DEFAULT_PROMPT == "v4"
+
+
+def test_reader_retries_once(monkeypatch):
+    import vlm
+    calls = []
+
+    class Client:
+        def chat(self, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("llama-server process has terminated")
+            return {"message": {"content": json.dumps({"entries": [{"text": "Exit", "arrow": "left"}]})}}
+    r = vlm.SignReader.__new__(vlm.SignReader)
+    r.client, r.model, r.version, r.prompt = Client(), "m", "v4", vlm.PROMPTS["v4"]
+    monkeypatch.setattr(vlm.time, "sleep", lambda s: None)
+    import numpy as np
+    entries, raw = r(np.zeros((20, 40, 3), np.uint8))
+    assert len(calls) == 2 and entries == [{"text": "Exit", "arrow": "left"}]

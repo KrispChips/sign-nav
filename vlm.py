@@ -22,6 +22,7 @@ Whatever the prompt, parse() drops entries without a single Latin letter or digi
 All versions return the same entries: [{"text", "arrow"}] in the step 1 arrow vocabulary."""
 import json
 import re
+import time
 
 import cv2
 
@@ -125,11 +126,22 @@ class SignReader:
         self.model, self.version = model, prompt
         self.prompt = PROMPTS[prompt]
 
-    def __call__(self, crop):
+    def __call__(self, crop, retries=1, wait_s=3.0):
+        """One retry after a pause: Ollama's server can die when the GPU is short of memory
+        (e.g. 'llama-server process has terminated ... CUDA error') and comes back on the
+        next request."""
         ok, buf = cv2.imencode(".jpg", _prep(crop), [cv2.IMWRITE_JPEG_QUALITY, 92])
-        resp = self.client.chat(
-            model=self.model,
-            messages=[{"role": "user", "content": self.prompt, "images": [buf.tobytes()]}],
-            format="json", options={"temperature": 0})
+        for attempt in range(retries + 1):
+            try:
+                resp = self.client.chat(
+                    model=self.model,
+                    messages=[{"role": "user", "content": self.prompt, "images": [buf.tobytes()]}],
+                    format="json", options={"temperature": 0})
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == retries:
+                    raise
+                print(f"[vlm] {type(e).__name__}: {str(e)[:120]} -- retrying in {wait_s:.0f}s")
+                time.sleep(wait_s)
         raw = resp["message"]["content"]
         return parse(raw, self.version), raw
