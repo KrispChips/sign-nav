@@ -50,7 +50,7 @@ class ChatLog:
                                lines=[f"OCR: {ocr_text}"] if ocr_text else [],
                                thumb=tr.best_crop.copy(), thumb_h=40))
 
-    def sign_result(self, tr, t, sentence, entries, mount, error=None):
+    def sign_result(self, tr, t, sentence, entries, mount, error=None, confirmed=True):
         item = self._by_track.get(tr.id)
         if item is None:
             return
@@ -58,8 +58,9 @@ class ChatLog:
         if error:
             item.update(color=ERR_COL, status="read failed", lines=[str(error)[:200]])
             return
-        item.update(color=SIGN_COL if entries else MUTED,
-                    status=f"read, {mount}" if entries else "nothing legible")
+        item.update(color=SIGN_COL if entries and confirmed else MUTED,
+                    status=(f"read, {mount}" if confirmed else "not confirmed by OCR: not spoken")
+                    if entries else "nothing legible")
         item["lines"] = ([f"“{sentence}”"] if sentence else []) + (
             [f"filter: {item['check']}"] if item.get("check") else []) + [
             f"• {e['text']}" + ("" if e["arrow"] == "none" else f"  (arrow: {e['arrow']})")
@@ -134,7 +135,8 @@ def draw_scene(image, tracks, inter, t, info, flash=None, height=720):
         rejected = not tr.submitted and tr.rejected_q is not None
         col = GREEN if tr.submitted else RED if rejected else ORANGE
         cv2.rectangle(vis, (x1, y1), (x2, y2), col, 2)
-        cv2.putText(vis, f"#{tr.id} " + ("filtered" if rejected else f"q={tr.best_q:.2f}"),
+        status = getattr(tr, "legibility", None) or f"q={tr.best_q:.2f}"
+        cv2.putText(vis, f"#{tr.id} " + ("filtered" if rejected else status),
                     (x1, max(15, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
     w = vis.shape[1]

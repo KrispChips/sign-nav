@@ -16,55 +16,18 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from rapidfuzz import fuzz
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import facilities  # noqa: E402
-from entries import normalize  # noqa: E402
 from legibility.calibrate import (Cache, GemmaReader, OcrProxyReader, crop_of, load_dataset,  # noqa: E402
                                   score_read, select_signs)
 from legibility.degrade import degrade, sample_params, sight, stable_seed  # noqa: E402
 from legibility.model import LegibilityModel  # noqa: E402
-from legibility.trigger import DONE, READ, UNREADABLE, ReadTrigger  # noqa: E402
+from legibility.trigger import (DONE, READ, UNREADABLE, ReadTrigger, cross_check,  # noqa: E402
+                                cross_check_score)
 
-OCR_AGREE = 80
-
-
-# Words of pictogram names the reader gives (prompt v4) that no OCR can find printed.
-PICTOGRAM_WORDS = {"WHEELCHAIR", "ACCESSIBLE", "ACCESSIBILITY", "ACCESS", "BICYCLE", "BUS",
-                   "TAXI", "CAR", "SHUTTLE", "PEDESTRIAN", "PEOPLE", "PERSON", "ICON", "PICTOGRAM"}
-
-
-def _checkable(text):
-    """Entries the OCR text can confirm: printed text, not pictograms named as places
-    ("Toilets", "Lift") or 1-2 character fragments."""
-    t = normalize(text).text
-    if len([c for c in t if c.isalnum()]) <= 2 or facilities.lookup(t):
-        return False
-    return not (set(t.split()) & PICTOGRAM_WORDS)
-
-
-def cross_check_score(entries, ocr_text):
-    """(confirmed, checkable): returned printed-text entries found in the OCR text."""
-    ocr = normalize(ocr_text or "").text
-    check = [e for e in entries if _checkable(e.get("text", ""))]
-    hits = sum(fuzz.partial_ratio(normalize(e.get("text", "")).text, ocr) >= OCR_AGREE for e in check)
-    return hits, len(check)
-
-
-def cross_check(entries, ocr_text) -> bool:
-    """Live-style read check: at least half the returned printed-text entries appear in the
-    OCR text. Named pictograms are left out: they can't be printed, and counting them failed
-    correct reads once prompt v4 started naming pictograms."""
-    if not entries:
-        return False
-    hits, n = cross_check_score(entries, ocr_text)
-    if n == 0:
-        return True     # only pictograms: nothing the OCR could confirm or contradict
-    return hits >= max(1, n / 2)
 
 
 def approach_scales(start_scale=0.06, steps=40, dwell=4):

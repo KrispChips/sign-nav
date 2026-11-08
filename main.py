@@ -55,6 +55,16 @@ class Announcer:
                 engine.say(text); engine.runAndWait()
 
 
+def _legibility_label(m, d, model):
+    """Short status for the video overlay: measured text height vs this angle's threshold."""
+    h = "no text" if m.h_p25 is None else f"{m.h_p25:.0f}/{model.h_star(m.angle):.0f}px"
+    if d.action == "approach" and d.scale_needed and d.scale_needed != float("inf"):
+        if d.scale_needed <= 1.01:   # big enough, waiting for 2 of 3 sightings / lines to settle
+            return f"{h} legible, confirming"
+        return f"{h} closer x{d.scale_needed:.1f}"
+    return f"{h} {d.action.replace('_', ' ')}"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, help="video file, rtsp/http URL, or webcam index")
@@ -82,6 +92,10 @@ def main():
     ap.add_argument("--depth-long-side", type=int, default=518, help="depth input size, multiple of 14")
     ap.add_argument("--open-thr", type=float, default=0.55, help="side farness needed to count as open")
     ap.add_argument("--close-thr", type=float, default=0.40, help="side farness below which it closes")
+    ap.add_argument("--legibility", default="legibility_calib.json",
+                    help="calibration from legibility.calibrate: read a sign when its text is legible")
+    ap.add_argument("--no-legibility", action="store_true",
+                    help="old behaviour: read each sign at its best-quality view")
     ap.add_argument("--debug-dir", default="debug_out")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--out-video", help="write an annotated video (scene + chat log), e.g. annotated.mp4")
@@ -106,7 +120,21 @@ def main():
                                  None if a.no_clip else ClipCheck(margin=a.clip_margin,
                                                                   device=detector.device))
     reader = SignReader(a.model, a.ollama_host)
-    tracker = Tracker(ready_q=a.ready_q)
+    legibility = None
+    if not a.no_legibility:
+        if os.path.exists(a.legibility):
+            from legibility.measure import measure
+            from legibility.model import LegibilityModel
+            from legibility.trigger import READ, ReadTrigger, cross_check
+            from signfilter import ocr_engine
+            legibility = LegibilityModel.load(a.legibility)
+            legibility_engine = ocr_engine()
+            triggers = {}
+            print(f"[legibility] {a.legibility}: thresholds "
+                  + ", ".join(f"{b.angle:.0f} deg {b.h_star:.0f} px" for b in legibility.bins))
+        else:
+            print(f"[legibility] {a.legibility} not found: reading each sign at its best view instead")
+    tracker = Tracker(ready_q=a.ready_q, auto_ready=legibility is None)
     heading = Heading()
     speaker = Announcer(enabled=not a.no_tts)
     watcher = None if a.no_intersections else IntersectionWatcher(
@@ -118,6 +146,7 @@ def main():
     log = open(os.path.join(a.debug_dir, "reads.jsonl"), "a")
     ilog = open(os.path.join(a.debug_dir, "intersections.jsonl"), "a")
     flog = open(os.path.join(a.debug_dir, "filter.jsonl"), "a")
+    llog = open(os.path.join(a.debug_dir, "legibility.jsonl"), "a")
     rejected_dir = os.path.join(a.debug_dir, "rejected")
     os.makedirs(rejected_dir, exist_ok=True)
     sent_to_vlm = 0
@@ -126,42 +155,58 @@ def main():
     video = VideoOut(a.out_video, a.fps) if a.out_video else None
     flash_until, flash = -1.0, None
 
-    def handle_read(fut, tr, t):
+    def handle_read(fut, job, t):
+        tr, info, ocr_text = job["track"], job["info"], job["ocr"]
         try:
             entries, raw = fut.result()
         except Exception as e:  # noqa: BLE001
             print(f"[vlm] error on track {tr.id}: {e}")
             chat.sign_result(tr, t, None, [], None, error=e)
+            if legibility is not None:
+                triggers[tr.id].read_result(False)
             return
-        mount = mounting(tr.best_info["theta"], tr.best_info["frontality"])
+        mount = mounting(info["theta"], info["frontality"])
         rel = heading.relative(tr.last_theta, tr.last_yaw)   # where it is NOW-ish
         sentence = describe(entries, rel, mount)
+        confirmed, outcome = True, None
+        if legibility is not None:
+            # Same check as the simulation: the returned printed text must be backed by OCR on
+            # the same view. Unconfirmed reads aren't spoken; the trigger raises this sign's
+            # threshold and reads again closer (or gives up after two).
+            confirmed = cross_check(entries, ocr_text)
+            outcome = triggers[tr.id].read_result(confirmed).action
         log.write(json.dumps(dict(track=tr.id, t=t, entries=entries, raw=raw,
-                                  mount=mount, rel=rel, q=tr.best_q, info=tr.best_info,
-                                  attempt=tr.attempts, said=sentence)) + "\n"); log.flush()
-        chat.sign_result(tr, t, sentence, entries, mount)
-        if sentence:
+                                  mount=mount, rel=rel, q=tr.best_q, info=info,
+                                  attempt=tr.attempts, confirmed=confirmed, outcome=outcome,
+                                  said=sentence if confirmed else None)) + "\n"); log.flush()
+        chat.sign_result(tr, t, sentence if confirmed else None, entries, mount, confirmed=confirmed)
+        if sentence and confirmed:
             speaker.say(sentence)
 
-    def submit(tr, t):
+    def submit(tr, t, crop=None, info=None, ocr_text=""):
+        """Filter, then read. `crop` defaults to the track's best view (no legibility)."""
         nonlocal sent_to_vlm
+        crop = tr.best_crop if crop is None else crop
+        info = tr.best_info if info is None else info
         check = None
         if sign_filter:
-            keep, reason, ocr_text = sign_filter(tr.best_crop)
-            check = dict(keep=keep, reason=reason, ocr=ocr_text)
+            keep, reason, ocr_text_f = sign_filter(crop)
+            check = dict(keep=keep, reason=reason, ocr=ocr_text_f)
             flog.write(json.dumps(dict(track=tr.id, t=t, attempt=tr.attempts, q=tr.best_q,
                                        ms=round(sign_filter.last_ms, 1), **check)) + "\n")
             flog.flush()
             if not keep:
                 name = re.sub(r"[^0-9A-Za-z.+-]+", "_", reason)   # also safe on Windows
                 cv2.imwrite(os.path.join(rejected_dir, f"track{tr.id:04d}_a{tr.attempts}_{name}.jpg"),
-                            tr.best_crop)
+                            crop)
                 tracker.reject(tr, reason)
-                chat.sign_filtered(tr, t, reason, ocr_text)
+                chat.sign_filtered(tr, t, reason, ocr_text_f)
+                if legibility is not None:
+                    triggers[tr.id].read_result(False)   # not a sign (yet): counts as a failed read
                 return
         sent_to_vlm += 1
-        pending[pool.submit(reader, tr.best_crop)] = tr
-        cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), tr.best_crop)
+        pending[pool.submit(reader, crop)] = {"track": tr, "info": info, "ocr": ocr_text}
+        cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), crop)
         chat.sign_pending(tr, t, check["reason"] if check else None)
 
     frame = None
@@ -182,6 +227,20 @@ def main():
         dets = detector(frame.image)
         for tr in tracker.update(frame, dets):
             submit(tr, frame.t)
+        if legibility is not None:
+            for tr in tracker.tracks:
+                if tr.last_t != frame.t:          # not seen in this frame
+                    continue
+                m = measure(tr.last_crop, tr.last_info, legibility_engine)
+                trig = triggers.setdefault(tr.id, ReadTrigger(legibility))
+                d = trig.update(m)
+                tr.legibility = _legibility_label(m, d, legibility)
+                llog.write(json.dumps(dict(m.to_dict(), t=frame.t, track=tr.id, action=d.action,
+                                           scale_needed=d.scale_needed, reason=d.reason)) + "\n")
+                if d.action == READ:
+                    tr.submitted, tr.attempts = True, tr.attempts + 1
+                    submit(tr, frame.t, tr.last_crop, tr.last_info, m.ocr_text)
+            llog.flush()
 
         for fut in [f for f in pending if f.done()]:
             handle_read(fut, pending.pop(fut), frame.t)
@@ -203,10 +262,10 @@ def main():
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-    for tr in tracker.flush():   # signs still in view when the stream ended
+    for tr in tracker.flush():   # signs still in view when the stream ended (no legibility)
         submit(tr, frame.t if frame else 0.0)
-    for fut, tr in list(pending.items()):   # wait for outstanding reads
-        handle_read(fut, tr, frame.t if frame else 0.0)
+    for fut, job in list(pending.items()):   # wait for outstanding reads
+        handle_read(fut, job, frame.t if frame else 0.0)
     if video and frame is not None:   # hold the last frame so late reads are visible
         info = f"t={frame.t:6.1f}s  end of video"
         scene = draw_scene(frame.image, [], None, frame.t, info)

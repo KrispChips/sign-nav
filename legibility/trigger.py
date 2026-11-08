@@ -20,13 +20,76 @@ Rules:
 - after 2 failed reads of a sign that measured as legible, it's UNREADABLE: not a distance
   problem, walking closer won't help;
 - at most 3 reads per sign."""
+import re
 import statistics
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Optional
 
+from rapidfuzz import fuzz
+
+import facilities
+from entries import normalize
+
 from legibility.measure import Measurement
 from legibility.model import LegibilityModel
+
+OCR_AGREE = 80
+
+# Words of pictogram names the reader gives (prompt v4) that no OCR can find printed.
+PICTOGRAM_WORDS = {"WHEELCHAIR", "ACCESSIBLE", "ACCESSIBILITY", "ACCESS", "BICYCLE", "BUS",
+                   "TAXI", "CAR", "SHUTTLE", "PEDESTRIAN", "PEOPLE", "PERSON", "ICON", "PICTOGRAM"}
+
+
+def _checkable(text):
+    """Entries the OCR text can confirm: printed text, not pictograms named as places
+    ("Toilets", "Lift") or 1-2 character fragments."""
+    t = normalize(text).text
+    if len([c for c in t if c.isalnum()]) <= 2 or facilities.lookup(t):
+        return False
+    return not (set(t.split()) & PICTOGRAM_WORDS)
+
+
+def _words(text):
+    """Uppercase words, accents dropped, no filler stripping (unlike the step 1 normalizer,
+    which turns "ROOM 214" into "214" and so can't be confirmed by an OCR that read "ROOM")."""
+    t = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", str(text)))
+    t = "".join(c for c in t if not unicodedata.combining(c)).upper()
+    return re.findall(r"[A-Z0-9]+", t)
+
+
+def _confirmed(entry_text, ocr_words):
+    """At least half the entry's words appear (fuzzily) among the OCR words."""
+    words = _words(entry_text)
+    if not words:
+        return False
+    found = sum(any(w == o or (len(w) >= 3 and fuzz.ratio(w, o) >= OCR_AGREE) for o in ocr_words)
+                for w in words)
+    return found >= len(words) / 2
+
+
+def cross_check_score(entries, ocr_text):
+    """(confirmed, checkable): returned printed-text entries found in the OCR text. OCR often
+    reads only part of a line, so an entry counts when half its words are there."""
+    ocr_words = _words(ocr_text or "")
+    check = [e for e in entries if _checkable(e.get("text", ""))]
+    hits = sum(_confirmed(e.get("text", ""), ocr_words) for e in check)
+    return hits, len(check)
+
+
+def cross_check(entries, ocr_text) -> bool:
+    """Live-style read check: at least half the returned printed-text entries appear in the
+    OCR text. Named pictograms are left out: they can't be printed, and counting them failed
+    correct reads once prompt v4 started naming pictograms."""
+    if not entries:
+        return False
+    hits, n = cross_check_score(entries, ocr_text)
+    if n == 0:
+        return True     # only pictograms: nothing the OCR could confirm or contradict
+    return hits >= max(1, n / 2)
+
+
 
 WAIT, READ, APPROACH, FACE_SIGN, DONE, UNREADABLE = (
     "wait", "read", "approach", "face_sign", "done", "unreadable")

@@ -47,6 +47,7 @@ class Measurement:
     sharpness: float            # Laplacian variance of the crop (rectify.py)
     heights: list[float] = field(default_factory=list)   # every line height, source px
     h_box_p25: Optional[float] = None   # same statistic from raw detector box heights
+    ocr_text: str = ""          # what the recognizer read (for the read cross-check)
     t: Optional[float] = None   # sighting time, set by the caller
 
     @property
@@ -55,7 +56,7 @@ class Measurement:
 
     def to_dict(self) -> dict:
         return {k: (round(v, 3) if isinstance(v, float) else v) for k, v in self.__dict__.items()
-                if k != "heights"}
+                if k not in ("heights", "ocr_text")}
 
 
 def box_height(quad) -> float:
@@ -75,13 +76,15 @@ def detect_boxes(crop, engine) -> list:
 MIN_CONF, MIN_CHARS = 0.6, 2
 
 
-def readable_boxes(crop, engine, min_conf=MIN_CONF, min_chars=MIN_CHARS) -> tuple[list, int]:
-    """(boxes the recognizer reads as text, number of boxes detected), in crop pixels."""
+def readable_boxes(crop, engine, min_conf=MIN_CONF, min_chars=MIN_CHARS) -> tuple[list, int, list]:
+    """(boxes the recognizer reads as text, number of boxes detected, their texts)."""
     r = engine(crop, use_det=True, use_cls=False, use_rec=True)
     boxes = [] if r.boxes is None else list(r.boxes)
-    keep = [q for q, t, c in zip(boxes, r.txts or (), r.scores or ())
-            if c >= min_conf and len(re.findall(r"[0-9A-Za-z]", t)) >= min_chars]
-    return keep, len(boxes)
+    keep, texts = [], []
+    for q, t, c in zip(boxes, r.txts or (), r.scores or ()):
+        if c >= min_conf and len(re.findall(r"[0-9A-Za-z]", t)) >= min_chars:
+            keep.append(q); texts.append(t)
+    return keep, len(boxes), texts
 
 
 def to_source_scale(crop, v_scale: float):
@@ -125,7 +128,7 @@ def measure(crop, info: dict, engine=None, min_px: float = 2.0,
     """`info` is rectify()'s dict (needs v_scale, frontality, sharpness, height_px, aspect)."""
     src = to_source_scale(crop, float(info.get("v_scale", 1.0)))
     sign_h = float(info.get("height_px", src.shape[0]))
-    readable, _ = readable_boxes(src, engine)
+    readable, _, texts = readable_boxes(src, engine)
     boxes = [q for q in readable
              if sign_h >= SMALL_SIGN_PX or box_height(q) <= max_frac_of_sign * sign_h]
     box_hs = [box_height(q) for q in boxes]
@@ -138,4 +141,5 @@ def measure(crop, info: dict, engine=None, min_px: float = 2.0,
     return Measurement(h_p25=h_p25, h_med=h_med, n_lines=len(heights), sign_px=sign_px,
                        angle=math.degrees(math.acos(front)),
                        sharpness=float(info.get("sharpness", 0.0)), heights=heights,
-                       h_box_p25=float(np.percentile(box_hs, 25)) if box_hs else None)
+                       h_box_p25=float(np.percentile(box_hs, 25)) if box_hs else None,
+                       ocr_text=" | ".join(texts))

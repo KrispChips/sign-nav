@@ -37,3 +37,12 @@ def test_cross_check_ignores_named_pictograms():
     assert cross_check(entries, "ROOM 214")            # 1 of 1 printed entries confirmed
     assert not cross_check([{"text": "Cafeteria"}, {"text": "Toilets"}], "ROOM 214")
     assert cross_check([{"text": "Toilets"}], "")      # pictograms only: nothing to contradict
+
+
+def test_cross_check_accepts_partial_ocr_of_a_line():
+    """OCR often reads only part of a line: half the entry's words is enough."""
+    assert cross_check([{"text": "ROOM 214"}], "ROOM")
+    assert cross_check([{"text": "To Marina South Pier"}], "to Marina South")
+    assert cross_check([{"text": "PHARMACY"}], "PHARMACV")             # OCR slip
+    assert not cross_check([{"text": "ROOM 214"}], "LIFTS")
+    assert not cross_check([{"text": "Surgical Ward East"}], "WARD")    # 1 of 3 words

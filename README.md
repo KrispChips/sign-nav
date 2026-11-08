@@ -244,6 +244,28 @@ Dry run without Gemma or the dataset (OCR stand-in reader, rendered signs; outpu
 `simulate --synthetic 20 --reader ocr`. Here: 0.85 reads/sign, 79% final recall vs a 94%
 reader ceiling, which says nothing about Gemma: the stand-in's cross-check can't fail.
 
+## Live demo (Meta glasses or iPhone footage)
+
+`main.py` reads a sign when its text is legible, using `legibility_calib.json` (from
+`legibility.calibrate fit`; pass another with `--legibility`, or `--no-legibility` for the old
+best-quality-view behaviour). Per tracked sign, every sighting is measured and its read
+trigger decides: wait, read, get closer (by how much), or face the sign. A read goes through
+the distractor filter, then Gemma (prompt v4); it is spoken only if its printed text is
+confirmed by OCR on the same view (pictogram names are exempt), otherwise the sign is read
+again closer, and given up after two failures.
+
+```powershell
+python main.py --source glasses_walk.mp4 --calib glasses.npz --no-tts --out-video annotated.mp4
+```
+- Calibrate the glasses camera once with `calibrate.py` on a checkerboard video recorded with
+  the glasses, in the same orientation and resolution as your walks (`--calib glasses.npz`).
+  Without it, set `--hfov` to the horizontal field of view; angles and rectification depend on it.
+- The overlay shows, per sign, measured text height / threshold and the trigger's decision
+  ("closer x1.8", "legible, confirming", "read", "face sign"); the chat log marks reads that
+  OCR didn't confirm. Per-sighting decisions are in `debug_out/legibility.jsonl`.
+- Signs with no readable text (pure pictograms) are not read until a pictogram calibration
+  exists (SiGNgapore2D's selected signs had none).
+
 ## Reader prompts and arrows (`vlm.py`, `vlm_eval.py`)
 
 From 3479 entries whose text Gemma read in the calibration run: arrows were right 62% of the

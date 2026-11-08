@@ -44,6 +44,7 @@ class Track:
 
     def add(self, frame, box, score):
         crop, info = rectify(frame.image, box, frame.K)
+        self.last_crop, self.last_info = crop, info     # the legibility trigger reads the latest view
         q = quality(info, score)
         self.box, self.last_t, self.hits = np.asarray(box, float), frame.t, self.hits + 1
         self.last_theta, self.last_yaw = info["theta"], frame.yaw_deg
@@ -60,8 +61,9 @@ def _iou(a, b):
 
 class Tracker:
     def __init__(self, ready_q=0.5, great_q=0.85, min_q=0.2, min_hits=2, patience=0.6,
-                 max_age=1.5, iou_thr=0.2, retry_gain=1.3, max_attempts=2):
+                 max_age=1.5, iou_thr=0.2, retry_gain=1.3, max_attempts=2, auto_ready=True):
         self.ready_q, self.great_q, self.min_q = ready_q, great_q, min_q
+        self.auto_ready = auto_ready   # False: only track; something else decides when to read
         self.min_hits, self.patience, self.max_age, self.iou_thr = min_hits, patience, max_age, iou_thr
         self.retry_gain, self.max_attempts = retry_gain, max_attempts
         self.tracks, self._next_id = [], 1
@@ -125,7 +127,7 @@ class Tracker:
                 self.tracks.append(tr)
 
         ready = []
-        for tr in self.tracks:
+        for tr in (self.tracks if self.auto_ready else []):
             if not self._eligible(tr):
                 continue
             lost = frame.t - tr.last_t > self.max_age
@@ -138,4 +140,4 @@ class Tracker:
     def flush(self):
         """At end of stream: everything worth reading that hasn't been read yet."""
         return [self._hand_out(tr) for tr in self.tracks
-                if self._eligible(tr) and tr.best_q >= self.min_q]
+                if self.auto_ready and self._eligible(tr) and tr.best_q >= self.min_q]
