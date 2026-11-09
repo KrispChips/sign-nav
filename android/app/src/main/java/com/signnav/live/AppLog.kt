@@ -13,9 +13,19 @@ object AppLog {
     add(msg)
   }
 
+  /** The latest error, shown on the status screen so it can't scroll away. */
+  @Volatile var lastError: String? = null
+    private set
+
   fun e(msg: String, t: Throwable? = null) {
     Log.e(TAG, msg, t)
+    lastError = msg
     add("ERROR $msg")
+  }
+
+  /** Logcat only (noisy things like the PC reconnecting). */
+  fun d(msg: String) {
+    Log.d(TAG, msg)
   }
 
   private fun add(msg: String) {

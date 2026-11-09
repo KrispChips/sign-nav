@@ -48,11 +48,30 @@ class Glasses(
   private val yaw = YawEstimator()
   private var quality = VideoQuality.HIGH
   private var fps = 24
+  @Volatile private var wanted = false
+  private var retryJob: Job? = null
 
   fun start(quality: VideoQuality, fps: Int) {
-    if (session != null) return
     this.quality = quality
     this.fps = fps
+    wanted = true
+    openSession()
+  }
+
+  /** While running, a session that fails or ends is retried every few seconds: the glasses
+   * may be folded, out of range or still connecting to the phone. */
+  private fun retryLater(why: String) {
+    if (!wanted || retryJob?.isActive == true) return
+    sessionState = "retrying: $why"
+    retryJob = scope.launch {
+      kotlinx.coroutines.delay(4000)
+      if (wanted && session == null) openSession()
+    }
+  }
+
+  private fun openSession() {
+    if (session != null) return
+    AppLog.i("opening a session with the glasses")
     Wearables.createSession(AutoDeviceSelector())
         .onSuccess { s ->
           session = s
@@ -67,12 +86,33 @@ class Glasses(
               if (st == DeviceSessionState.STARTED) {
                 if (camera == null) attachCamera(s)
                 if (motion == null) attachMotion(s)
+              } else if (st == DeviceSessionState.STOPPED && session === s) {
+                endSession()
+                retryLater("session stopped")
               }
             }
           }
           s.start() // fire-and-forget; progress arrives through s.state / s.errors
         }
-        .onFailure { e, _ -> AppLog.e("could not create a session: ${e.description}") }
+        .onFailure { e, _ ->
+          AppLog.e("could not create a session: ${e.description}")
+          retryLater(e.description)
+        }
+  }
+
+  /** Drops this session's capabilities (it has ended) but keeps the collectors' scope. */
+  private fun endSession() {
+    jobs.forEach { it.cancel() }
+    jobs.clear()
+    synchronized(this) {
+      decoder?.stop()
+      decoder = null
+    }
+    motion = null
+    camera = null
+    session = null
+    streamState = "-"
+    motionState = "-"
   }
 
   private fun attachCamera(s: DeviceSession) {
@@ -159,6 +199,8 @@ class Glasses(
   fun resetYaw() = yaw.reset()
 
   fun stop() {
+    wanted = false
+    retryJob?.cancel()
     jobs.forEach { it.cancel() }
     jobs.clear()
     runCatching { motion?.stop() }

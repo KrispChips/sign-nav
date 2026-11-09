@@ -23,6 +23,7 @@ import com.meta.wearable.dat.camera.types.VideoQuality
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
+import com.meta.wearable.dat.core.types.RegistrationState
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.delay
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
   private lateinit var mjpegFps: EditText
   private lateinit var jpegQuality: EditText
   private var registration = "-"
+  private var devices = 0
 
   private val androidPermissions =
       registerForActivityResult(RequestMultiplePermissions()) { result ->
@@ -87,6 +89,9 @@ class MainActivity : ComponentActivity() {
     lifecycleScope.launch {
       Wearables.registrationState.collect { registration = it.toString() }
     }
+    lifecycleScope.launch {
+      Wearables.devices.collect { devices = it.size }
+    }
   }
 
   private suspend fun ensureCameraPermission(): Boolean {
@@ -111,6 +116,14 @@ class MainActivity : ComponentActivity() {
       return
     }
     applySettings()
+    if (!sdkInitialized) {
+      AppLog.e("the glasses SDK isn't initialized: allow the Bluetooth permission (app settings)")
+      return
+    }
+    if (registration != RegistrationState.REGISTERED.toString()) {
+      AppLog.e("not registered ($registration): tap 'Connect glasses' and confirm in the Meta AI app first")
+      return
+    }
     lifecycleScope.launch {
       if (!ensureCameraPermission()) {
         AppLog.e("no camera permission for the glasses")
@@ -146,8 +159,10 @@ class MainActivity : ComponentActivity() {
     val sp = LiveSession.speech
     val lines = mutableListOf(
         "registration: $registration",
+        "glasses seen by the SDK: $devices",
         "running: ${LiveSession.running}",
     )
+    AppLog.lastError?.let { lines += "LAST ERROR: $it" }
     LiveSession.status().forEach { (k, v) -> lines += "$k: $v" }
     lines += "decoded: %.1f fps   sent: %.1f fps, %dx%d, %.0f KB/s".format(
         decFps, encFps, f.width, f.height, encFps * f.lastJpegBytes / 1024.0)

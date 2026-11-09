@@ -32,7 +32,10 @@ abstract class TcpServer(val port: Int, private val name: String) {
         val c = try { s.accept() } catch (e: SocketException) { break }
         c.tcpNoDelay = true
         clients += c
-        AppLog.i("$name: client ${c.inetAddress.hostAddress}")
+        // The PC retries every few seconds while the phone has nothing to send: log only
+        // a change of state, so real errors don't scroll off the screen.
+        if (clients.size == 1) AppLog.i("$name: PC connected (${c.inetAddress.hostAddress})")
+        else AppLog.d("$name: client ${c.inetAddress.hostAddress}")
         thread(name = "$name-client", isDaemon = true) {
           try {
             handle(c)
@@ -41,7 +44,7 @@ abstract class TcpServer(val port: Int, private val name: String) {
           } finally {
             clients -= c
             runCatching { c.close() }
-            AppLog.i("$name: client ${c.inetAddress.hostAddress} left")
+            AppLog.d("$name: client ${c.inetAddress.hostAddress} left")
           }
         }
       }
