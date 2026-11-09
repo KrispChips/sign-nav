@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
@@ -179,8 +180,13 @@ class MainActivity : ComponentActivity() {
       inputType = InputType.TYPE_CLASS_NUMBER
     }.also { col.addView(it) }
 
-    button("Connect glasses (Meta AI app)") { Wearables.startRegistration(this) }
+    TextView(this).apply {
+      text = "Sign-nav live"
+      textSize = 22f
+      setTypeface(typeface, Typeface.BOLD)
+    }.also { col.addView(it) }
     startStop = button("Start") { onStartStop() }
+    button("Connect glasses (Meta AI app)") { Wearables.startRegistration(this) }
     button("Test speech") {
       LiveSession.speech?.say("Sign navigation test. Hallway ahead on your left.")
           ?: AppLog.i("press Start first (speech starts with the servers)")
@@ -215,6 +221,16 @@ class MainActivity : ComponentActivity() {
       typeface = Typeface.MONOSPACE
       textSize = 11f
     }.also { col.addView(it) }
-    return ScrollView(this).apply { addView(col, MATCH_PARENT, WRAP_CONTENT) }
+    return ScrollView(this).apply {
+      addView(col, MATCH_PARENT, WRAP_CONTENT)
+      // Android 15+ draws apps edge to edge: keep the content clear of the status bar,
+      // camera cutout and navigation bar, or the top buttons end up hidden under them.
+      setOnApplyWindowInsetsListener { v, insets ->
+        val bars = insets.getInsets(
+            WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+        v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        insets
+      }
+    }
   }
 }
