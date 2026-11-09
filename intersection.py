@@ -39,14 +39,31 @@ import numpy as np
 from direction import where
 
 DEPTH_REPO = "onnx-community/depth-anything-v2-small"
-DEPTH_FILE = "onnx/model_int8.onnx"
+DEPTH_FILE = "onnx/model_int8.onnx"     # CPU: int8 is ~2-3x faster there
+DEPTH_FILE_GPU = "onnx/model.onnx"      # GPU: int8 ops don't run on CUDA (each frame would
+                                        # bounce between GPU and CPU: ~0.5 s instead of ~20 ms)
+GPU_PROVIDERS = ("CUDAExecutionProvider", "DmlExecutionProvider")
+
+
+def _providers():
+    """CUDA / DirectML if present, then CPU. Not TensorRT: it needs a separate install and
+    otherwise prints a long error before falling back."""
+    import onnxruntime as ort
+    avail = ort.get_available_providers()
+    return [p for p in GPU_PROVIDERS if p in avail] + ["CPUExecutionProvider"]
 
 
 def resolve_model(path=None):
-    """Local .onnx path, or download the default model from Hugging Face."""
+    """Local .onnx path, or download the default model from Hugging Face: the full-precision
+    model when a GPU provider is available, the int8 one for the CPU."""
     if path:
         return path
     from huggingface_hub import hf_hub_download
+    if len(_providers()) > 1:
+        try:
+            return hf_hub_download(repo_id=DEPTH_REPO, filename=DEPTH_FILE_GPU)
+        except Exception as e:  # noqa: BLE001
+            print(f"[depth] couldn't get {DEPTH_FILE_GPU} ({e}); using {DEPTH_FILE}")
     return hf_hub_download(repo_id=DEPTH_REPO, filename=DEPTH_FILE)
 
 
@@ -58,15 +75,19 @@ class DepthEstimator:
 
     def __init__(self, model_path, long_side=518):
         import onnxruntime as ort
-        self.sess = ort.InferenceSession(model_path, providers=ort.get_available_providers())
+        self.sess = ort.InferenceSession(model_path, providers=_providers())
         used = self.sess.get_providers()
-        if "CUDAExecutionProvider" in used or "TensorrtExecutionProvider" in used:
-            print(f"[depth] on the GPU ({used[0]})")
+        if used[0] in GPU_PROVIDERS:
+            print(f"[depth] on the GPU ({used[0]}), {model_path.replace(chr(92), '/').split('/')[-1]}")
+            if "int8" in model_path or "quant" in model_path:
+                print("[depth] note: an int8 model on the GPU runs partly on the CPU (slow); "
+                      "use the full-precision onnx/model.onnx")
         else:
             print(f"[depth] on the CPU ({', '.join(used)}): for the GPU, "
                   "pip uninstall onnxruntime && pip install onnxruntime-gpu")
         inp = self.sess.get_inputs()[0]
         self.input_name = inp.name
+        self.half = inp.type == "tensor(float16)"
         hw = inp.shape[2:4]
         # Use the model's fixed input size if it has one, otherwise pick our own.
         self.fixed_hw = tuple(hw) if all(isinstance(s, int) for s in hw) else None
@@ -87,6 +108,8 @@ class DepthEstimator:
         x = cv2.resize(rgb, (tw, th), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255.0
         x = (x - self.MEAN) / self.STD
         x = x.transpose(2, 0, 1)[None]
+        if self.half:
+            x = x.astype(np.float16)
         out = self.sess.run(None, {self.input_name: x})[0]
         return np.squeeze(out).astype(np.float32)
 
