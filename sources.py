@@ -141,22 +141,39 @@ class _LatestFrame:
             return (None, seen) if self.n == seen else (self.img, self.n)
 
 
-def video_frames(source, camera, imu=None, fps=5.0):
-    """Yields undistorted Frames at about `fps` from a file, URL or webcam index."""
-    src = int(source) if str(source).isdigit() else source
-    live = not os.path.isfile(str(source))
-    cap = cv2.VideoCapture(src)
-    if not cap.isOpened():
-        raise SystemExit(f"cannot open {source}")
-    step = 1.0 / fps
+def _open_live(src, timeout_ms=5000):
+    """VideoCapture with open/read timeouts where OpenCV supports them, so an unreachable
+    phone doesn't hang for half a minute."""
+    if isinstance(src, str):
+        try:
+            return cv2.VideoCapture(src, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms,
+                                                         cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms])
+        except (cv2.error, TypeError, AttributeError):
+            pass
+    return cv2.VideoCapture(src)
 
-    def make(img, t):
-        img, K = camera(img)
-        yaw = imu.yaw_at(t) if imu is not None else None
-        return Frame(img, t, K, yaw)
 
-    if live:
-        grab, seen, t0, last = _LatestFrame(cap), 0, time.monotonic(), -1e9
+def _live_frames(src, camera, imu, step, reconnect=True, retry_s=2.0):
+    """Frames from a live source (stream URL or webcam): the newest one at most every `step`
+    seconds. Waits for the source to appear and reconnects when it drops (the phone app can
+    restart or lose the network mid-walk); `t` keeps counting from the first connection."""
+    t0, last, warned, ever = None, -1e9, False, False
+    while True:
+        cap = _open_live(src)
+        if not cap.isOpened():
+            cap.release()
+            if not reconnect and not ever:
+                raise SystemExit(f"cannot open {src}")
+            if not warned:
+                print(f"[source] waiting for {src} ...", flush=True)
+                warned = True
+            time.sleep(retry_s)
+            continue
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"[source] connected: {w}x{h}", flush=True)
+        warned, ever = False, True
+        t0 = time.monotonic() if t0 is None else t0
+        grab, seen = _LatestFrame(cap), 0
         while True:
             img, seen = grab.next(seen)
             if img is None:
@@ -165,16 +182,40 @@ def video_frames(source, camera, imu=None, fps=5.0):
             if t - last < step:
                 continue
             last = t
-            yield make(img, t)
-    else:
-        next_t = 0.0
-        while cap.grab():
-            t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-            if t + 1e-6 < next_t:
-                continue
-            ok, img = cap.retrieve()
-            if not ok:
-                break
-            next_t = max(next_t + step, t)
-            yield make(img, t)
+            img, K = camera(img)
+            yield Frame(img, t, K, imu.yaw_at(t) if imu is not None else None)
+        cap.release()
+        if not reconnect:
+            return
+        print("[source] stream lost; reconnecting", flush=True)
+
+
+def video_frames(source, camera, imu=None, fps=5.0, reconnect=True):
+    """Yields undistorted Frames at about `fps` from a file, URL or webcam index. Live
+    sources are waited for and reconnected (see _live_frames)."""
+    src = int(source) if str(source).isdigit() else source
+    live = not os.path.isfile(str(source))
+    step = 1.0 / fps
+    if live:
+        yield from _live_frames(src, camera, imu, step, reconnect)
+        return
+    cap = cv2.VideoCapture(src)
+    if not cap.isOpened():
+        raise SystemExit(f"cannot open {source}")
+
+    def make(img, t):
+        img, K = camera(img)
+        yaw = imu.yaw_at(t) if imu is not None else None
+        return Frame(img, t, K, yaw)
+
+    next_t = 0.0
+    while cap.grab():
+        t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        if t + 1e-6 < next_t:
+            continue
+        ok, img = cap.retrieve()
+        if not ok:
+            break
+        next_t = max(next_t + step, t)
+        yield make(img, t)
     cap.release()

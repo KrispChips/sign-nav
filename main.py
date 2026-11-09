@@ -2,7 +2,8 @@
 plus hallway opening detection from monocular depth on the same frames.
 
   python main.py --source walk.mov --imu walk_imu.csv --show
-  python main.py --source rtsp://<phone-ip>:8554/live --udp-imu 9001 --show
+  python main.py --source http://<phone>:8080/frames.mjpg --speak-to <phone>:9002 \
+      --imu-from <phone>:9003 --hfov 70 --out-video live.mp4     (live, see docs/LIVE.md)
 """
 import argparse
 import json
@@ -23,20 +24,25 @@ from tracker import Tracker
 
 
 class Announcer:
-    """Speaks in a background thread; skips repeats within `cooldown` seconds."""
+    """Speaks in a background thread; skips repeats within `cooldown` seconds. With `remote`
+    (live.PhoneSpeaker) sentences go to the phone app, which speaks them through the glasses,
+    instead of the PC's speakers. `kind` is "sign" or "place" (hallways etc.): the phone drops a
+    place warning that waited too long to be said."""
 
-    def __init__(self, enabled=True, cooldown=20.0):
+    def __init__(self, enabled=True, cooldown=20.0, remote=None):
         self.q, self.recent, self.cooldown = queue.Queue(), {}, cooldown
-        self.enabled = enabled
+        self.enabled, self.remote = enabled, remote
         threading.Thread(target=self._run, daemon=True).start()
 
-    def say(self, text, dedupe=True):
+    def say(self, text, dedupe=True, kind="sign"):
         now = time.time()
         if dedupe and now - self.recent.get(text, -1e9) < self.cooldown:
             return
         self.recent[text] = now
         print(f"[SPEAK] {text}", flush=True)
-        if self.enabled:
+        if self.remote is not None:
+            self.remote.send(text, kind)
+        elif self.enabled:
             self.q.put(text)
 
     def _run(self):
@@ -74,6 +80,12 @@ def main():
     ap.add_argument("--imu-offset", type=float, default=0.0, help="seconds added to IMU timestamps")
     ap.add_argument("--gyro-sign", type=float, default=1.0)
     ap.add_argument("--udp-imu", type=int, help="port for live IMU JSON packets")
+    ap.add_argument("--speak-to", metavar="PHONE[:PORT]",
+                    help="send sentences to the phone app (port 9002) instead of local TTS")
+    ap.add_argument("--no-reconnect", action="store_true",
+                    help="live source: stop when the stream ends instead of waiting for it again")
+    ap.add_argument("--imu-from", metavar="PHONE[:PORT]",
+                    help="head yaw from the glasses via the phone app (port 9003)")
     ap.add_argument("--fps", type=float, default=5.0, help="processing rate")
     ap.add_argument("--model", default="gemma4:e4b")
     ap.add_argument("--ollama-host", default=None)
@@ -115,8 +127,10 @@ def main():
     from intersection import DepthEstimator, IntersectionWatcher, PlaceTracker, resolve_model
     from annotate import ChatLog, VideoOut, draw_scene
 
+    from live import PhoneSpeaker, TcpImu, parse_addr
     imu = (ImuTrack(a.imu, a.imu_offset, a.gyro_sign) if a.imu else
-           UdpImu(a.udp_imu) if a.udp_imu else None)
+           UdpImu(a.udp_imu) if a.udp_imu else
+           TcpImu(parse_addr(a.imu_from, 9003), a.gyro_sign) if a.imu_from else None)
     camera = Camera(a.calib, a.hfov)
     detector = SignDetector(box_thr=a.box_thr,
                             distractors=() if a.no_distractor_prompts else DISTRACTORS)
@@ -143,7 +157,8 @@ def main():
             print(f"[legibility] {a.legibility} not found: reading each sign at its best view instead")
     tracker = Tracker(ready_q=a.ready_q, auto_ready=legibility is None)
     heading = Heading()
-    speaker = Announcer(enabled=not a.no_tts)
+    speaker = Announcer(enabled=not a.no_tts,
+                        remote=PhoneSpeaker(parse_addr(a.speak_to, 9002)) if a.speak_to else None)
     watcher = None if a.no_intersections else IntersectionWatcher(
         DepthEstimator(resolve_model(a.depth_model), long_side=a.depth_long_side),
         PlaceTracker(hall_min=a.hall_min), eye_height=a.eye_height,
@@ -228,7 +243,7 @@ def main():
             kind = event["kind"]
             cv2.imwrite(os.path.join(a.debug_dir, f"{kind}_{f.t:07.1f}s.jpg"), f.image)
             if sentence:
-                speaker.say(sentence, dedupe=False)   # the tracker announces each place once
+                speaker.say(sentence, dedupe=False, kind="place")   # each place is announced once
             chat.place(f.t, event, spoken=bool(sentence))
             flash_until, flash = f.t + 1.0, event["sentence"].rstrip(".").upper()
 
@@ -236,7 +251,8 @@ def main():
     depth_fps = a.depth_fps or a.fps
     threaded = watcher is not None and not a.no_depth_thread
     live = not os.path.isfile(str(a.source))
-    frames = video_frames(a.source, camera, imu, max(a.fps, depth_fps) if threaded else a.fps)
+    frames = video_frames(a.source, camera, imu, max(a.fps, depth_fps) if threaded else a.fps,
+                          reconnect=not a.no_reconnect)
     depth_thread, depth_backlog = None, []
     depth_shown = {"ok": False, "reason": "waiting for the first result"}
     if threaded:
@@ -337,6 +353,11 @@ def main():
     with open(os.path.join(a.debug_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=1)
     print("[summary] " + "  ".join(f"{k}={v}" for k, v in summary.items()))
+    if speaker.remote is not None:        # hand the last sentences to the phone
+        deadline = time.time() + 5.0
+        while speaker.remote.pending() and speaker.remote.connected.is_set() and time.time() < deadline:
+            time.sleep(0.1)
+        return
     while not speaker.q.empty():
         time.sleep(0.2)
     time.sleep(3.0)  # let the last sentence finish
