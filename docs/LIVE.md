@@ -39,6 +39,12 @@ developer mode with USB debugging, and the Meta AI app with **Developer Mode** o
 app → Settings → your glasses → Developer Mode). Uses Meta's DAT SDK 1.0.1 from Maven Central
 (no token needed).
 
+Either install a ready-built APK (`app-debug.apk`): copy it to the phone and open it
+(allow "install unknown apps" for your file manager), or with USB debugging on:
+```powershell
+adb install -r app-debug.apk
+```
+or build it yourself:
 ```powershell
 cd C:\Users\krith\sign-nav\android
 .\gradlew.bat :app:installDebug          # or open the android\ folder in Android Studio and Run

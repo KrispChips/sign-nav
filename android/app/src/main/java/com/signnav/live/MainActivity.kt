@@ -89,13 +89,13 @@ class MainActivity : ComponentActivity() {
   }
 
   private suspend fun ensureCameraPermission(): Boolean {
-    var status = PermissionStatus.Denied
+    var status: PermissionStatus = PermissionStatus.Denied
     Wearables.checkPermissionStatus(Permission.CAMERA)
         .onSuccess { status = it }
         .onFailure { e, _ -> AppLog.e("camera permission check failed: ${e.description}") }
     if (status == PermissionStatus.Granted) return true
     AppLog.i("asking for glasses camera permission (opens the Meta AI app)")
-    status = suspendCancellableCoroutine { cont ->
+    status = suspendCancellableCoroutine<PermissionStatus> { cont ->
       cameraContinuation = cont
       cont.invokeOnCancellation { cameraContinuation = null }
       cameraPermission.launch(Permission.CAMERA)
