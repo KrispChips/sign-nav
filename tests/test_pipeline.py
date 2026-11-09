@@ -38,6 +38,24 @@ def test_file_mode_gives_each_consumer_every_frame_at_its_rate():
     assert slow == [round(i / 10, 2) for i in range(0, 40, 2)]
 
 
+def test_variable_frame_rate_keeps_every_pick():
+    """The glasses record at a variable frame rate: the reader's 5 fps picks come
+    0.19-0.23 s apart. Each must reach the consumers (a 'gap >= 0.2 s' rule dropped 1/3)."""
+    from pipeline import _Consumer
+    rng = np.random.default_rng(0)
+    ts = np.cumsum(rng.uniform(0.028, 0.039, 3000))
+    picks, next_t = [], 0.0
+    for t in ts[ts < 89.4]:              # what sources.video_frames yields at 5 fps
+        if t + 1e-6 < next_t:
+            continue
+        picks.append(t)
+        next_t = max(next_t + 0.2, t)
+    c = _Consumer(5.0, True)
+    assert sum(c.wants(t) for t in picks) == len(picks)
+    half = _Consumer(2.5, True)          # a slower consumer still gets ~every other one
+    assert abs(sum(half.wants(t) for t in picks) - len(picks) / 2) <= 3
+
+
 def test_live_mode_slow_consumer_gets_newest_frames_only():
     hub = FrameHub(frames(60, delay=0.005), True, 100.0, 100.0)
     slow, fast = [], []

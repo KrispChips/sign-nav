@@ -27,12 +27,18 @@ class _Consumer:
     def __init__(self, fps, keep_all):
         self.step = 1.0 / fps if fps else 0.0
         self.keep_all = keep_all
-        self.last_t = -1e9
+        self.last_slot = None
         self.q = queue.Queue(maxsize=2 if keep_all else 1)
 
     def wants(self, t):
-        if t - self.last_t + 1e-6 >= self.step:
-            self.last_t = t
+        """One frame per time slot of `step` seconds. Not "at least `step` after the last
+        one": with a variable frame rate (the glasses), the reader's picks are sometimes
+        0.19 s apart, and that rule dropped a third of them."""
+        if not self.step:
+            return True
+        slot = int((t + 0.25 * self.step) // self.step)
+        if self.last_slot is None or slot > self.last_slot:
+            self.last_slot = slot
             return True
         return False
 
