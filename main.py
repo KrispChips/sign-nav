@@ -90,6 +90,10 @@ def main():
     ap.add_argument("--no-intersections", action="store_true", help="skip opening detection")
     ap.add_argument("--depth-model", help="ONNX depth model (default: download Depth Anything V2 small)")
     ap.add_argument("--depth-long-side", type=int, default=518, help="depth input size, multiple of 14")
+    ap.add_argument("--depth-fps", type=float, default=None,
+                    help="hallway detection rate (default: --fps); it runs in its own thread")
+    ap.add_argument("--no-depth-thread", action="store_true",
+                    help="run depth inside the sign loop, at its pace (the old behaviour)")
     ap.add_argument("--eye-height", type=float, default=1.6,
                     help="camera height above the floor (m): sets the scale of all distances")
     ap.add_argument("--hall-min", type=float, default=1.4,
@@ -213,23 +217,57 @@ def main():
         cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), crop)
         chat.sign_pending(tr, t, check["reason"] if check else None)
 
+    def handle_depth(f, head, res, said):
+        """Log, speak and show one depth result (main thread only)."""
+        nonlocal flash_until, flash
+        if res is not None:
+            ilog.write(json.dumps(dict(t=f.t, yaw=f.yaw_deg, heading=head,
+                                       said=[x for x, _ in said], **res)) + "\n")
+            ilog.flush()
+        for sentence, event in said:
+            kind = event["kind"]
+            cv2.imwrite(os.path.join(a.debug_dir, f"{kind}_{f.t:07.1f}s.jpg"), f.image)
+            if sentence:
+                speaker.say(sentence, dedupe=False)   # the tracker announces each place once
+            chat.place(f.t, event, spoken=bool(sentence))
+            flash_until, flash = f.t + 1.0, event["sentence"].rstrip(".").upper()
+
+    from pipeline import DepthThread, FrameHub
+    depth_fps = a.depth_fps or a.fps
+    threaded = watcher is not None and not a.no_depth_thread
+    live = not os.path.isfile(str(a.source))
+    frames = video_frames(a.source, camera, imu, max(a.fps, depth_fps) if threaded else a.fps)
+    depth_thread, depth_backlog = None, []
+    depth_shown = {"ok": False, "reason": "waiting for the first result"}
+    if threaded:
+        hub = FrameHub(frames, live, a.fps, depth_fps)
+        sign_frames = iter(hub.consumers[0])
+        depth_thread = DepthThread(watcher, iter(hub.consumers[1]))
+        print(f"[depth] own thread at up to {depth_fps:g} frames/s "
+              f"({'newest frame' if live else 'every frame, in order'})")
+    else:
+        sign_frames = frames
+
+    def collect_depth(upto):
+        """Handle depth results up to time `upto` (the sign loop's frame), so the video and
+        chat log stay in step; on a live source that's whatever has arrived."""
+        nonlocal depth_shown
+        depth_backlog.extend(depth_thread.drain())
+        while depth_backlog and (live or depth_backlog[0][0].t <= upto + 1e-6):
+            item = depth_backlog.pop(0)
+            handle_depth(*item)
+            depth_shown = item[2]
+
     frame = None
-    for frame in video_frames(a.source, camera, imu, a.fps):
+    for frame in sign_frames:
         heading.update(frame.yaw_deg, frame.t)
         t0 = time.time()
-        if watcher:
+        if depth_thread:
+            collect_depth(frame.t)
+        elif watcher:
             res, said = watcher(frame, heading)
-            if res is not None:
-                ilog.write(json.dumps(dict(t=frame.t, yaw=frame.yaw_deg, heading=heading.value,
-                                           said=[x for x, _ in said], **res)) + "\n")
-                ilog.flush()
-            for sentence, event in said:
-                kind = event["kind"]
-                cv2.imwrite(os.path.join(a.debug_dir, f"{kind}_{frame.t:07.1f}s.jpg"), frame.image)
-                if sentence:
-                    speaker.say(sentence, dedupe=False)   # the tracker announces each place once
-                chat.place(frame.t, event, spoken=bool(sentence))
-                flash_until, flash = frame.t + 1.0, event["sentence"].rstrip(".").upper()
+            handle_depth(frame, heading.value, res, said)
+            depth_shown = res
         dets = detector(frame.image)
         for tr in tracker.update(frame, dets):
             submit(tr, frame.t)
@@ -255,11 +293,14 @@ def main():
             info = f"t={frame.t:6.1f}s  {1000*(time.time()-t0):.0f}ms/frame  reading={len(pending)}"
             if frame.yaw_deg is not None:
                 info += f"  yaw={frame.yaw_deg:+.0f} heading={heading.value:+.0f}"
-            if watcher and watcher.last is None:
+            if depth_thread:
+                fps_d, ms_d = depth_thread.rate()
+                info += f"  depth {fps_d:.1f}/s"
+            if watcher and depth_shown is None:
                 info += "  depth paused: head turned"
-            elif watcher and not watcher.last.get("ok", True):
-                info += f"  depth: {watcher.last['reason']}"
-            scene = draw_scene(frame.image, tracker.tracks, watcher.last if watcher else None,
+            elif watcher and not depth_shown.get("ok", True):
+                info += f"  depth: {depth_shown['reason']}"
+            scene = draw_scene(frame.image, tracker.tracks, depth_shown if watcher else None,
                                frame.t, info, flash if frame.t <= flash_until else None)
             vis = video.compose(scene, chat) if video else scene
             if video:
@@ -268,7 +309,17 @@ def main():
                 s = min(1.0, 1600 / vis.shape[1])
                 cv2.imshow("signs", cv2.resize(vis, None, fx=s, fy=s) if s < 1 else vis)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
+                    if depth_thread:
+                        hub.stop()
                     break
+
+    if depth_thread:      # results for frames after the sign loop's last one
+        depth_thread.join(timeout=30)
+        collect_depth(float("inf"))
+        if hub.error:
+            print(f"[frames] reader stopped: {hub.error}")
+        fps_d, ms_d = depth_thread.rate()
+        print(f"[depth] {depth_thread.n} frames, {fps_d:.1f}/s, {ms_d:.0f} ms each")
 
     for tr in tracker.flush():   # signs still in view when the stream ended (no legibility)
         submit(tr, frame.t if frame else 0.0)

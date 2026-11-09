@@ -59,6 +59,12 @@ class DepthEstimator:
     def __init__(self, model_path, long_side=518):
         import onnxruntime as ort
         self.sess = ort.InferenceSession(model_path, providers=ort.get_available_providers())
+        used = self.sess.get_providers()
+        if "CUDAExecutionProvider" in used or "TensorrtExecutionProvider" in used:
+            print(f"[depth] on the GPU ({used[0]})")
+        else:
+            print(f"[depth] on the CPU ({', '.join(used)}): for the GPU, "
+                  "pip uninstall onnxruntime && pip install onnxruntime-gpu")
         inp = self.sess.get_inputs()[0]
         self.input_name = inp.name
         hw = inp.shape[2:4]

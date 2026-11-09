@@ -396,6 +396,21 @@ and the `PlaceTracker` / `find_gaps` defaults.
 Depth updates pause while the head is turned more than 25 deg from the walking direction (needs
 the IMU), since the image edges are then not the sides of the hallway.
 
+**Runs in its own thread** (`pipeline.py`). Grounding DINO takes ~0.7 s a frame, the depth
+model a fraction of that; in one loop, hallway detection ran at DINO's ~1.4 frames/s, which
+live gives a side hallway one or two looks. Now a frame hub feeds two consumers: the depth
+thread at `--depth-fps` (default `--fps`) and the sign loop at `--fps`.
+- Live source: each takes the newest frame it hasn't seen, so neither waits for the other.
+- Video file: each gets every one of its frames in order, so the results equal the single
+  loop's (and `intersection_replay.py`'s); the run finishes sooner because the two overlap.
+Speech, the chat log, logs and the video stay in the main thread, which picks up depth results
+up to its current frame. The status line shows the depth rate; at the end it prints
+`[depth] N frames, X/s, Y ms each`. At startup `[depth] on the GPU` / `on the CPU` says where
+the model runs (for the GPU: `pip uninstall onnxruntime && pip install onnxruntime-gpu`).
+`--no-depth-thread` restores the single loop. A higher `--depth-fps` (e.g. 10) gives more
+looks per gap but decisions come sooner, e.g. a crossing may be announced side by side
+("Hallway ahead on your right." then "Hallway on your left too.").
+
 ## Moving to the glasses
 
 Write a generator like `video_frames()` that yields `Frame(image, t, K, yaw_deg)` from the
@@ -408,8 +423,8 @@ and keep everything else. Hook `Announcer.say()` into your navigation stack's sp
 - Hallway detection: glass walls look like openings; widths scale with `--eye-height` and the
   camera's FOV (calibrate the glasses, or set `--hfov` right); a person stopping or turning
   their head mid-gap (without IMU) can split one gap into two; T junctions passed off-centre
-  may only get one side announced. Depth runs in the same loop as Grounding DINO, so at
-  ~1.4 frames/s a side hallway gets 1-2 measurements: run depth on every frame for live use.
+  may only get one side announced. Depth and DINO share the GPU: if Ollama crashes or
+  everything slows, lower `--depth-long-side` (e.g. 392) or run depth on the CPU.
 - The head-turn pause only covers glances. A turn held longer than about a second becomes the
   new walking direction, so detection resumes.
 - Up/down arrows on wall-mounted signs are ambiguous by convention; they're announced as such.
