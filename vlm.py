@@ -120,11 +120,29 @@ def parse(raw, version="v1"):
 
 
 class SignReader:
-    def __init__(self, model="gemma4:e4b", host=None, prompt=DEFAULT_PROMPT):
+    """`think`: let Gemma 4 reason before answering. Off by default: with it on, Gemma wrote
+    ~330-620 hidden tokens per sign (~2.5 s on an RTX 5060 Ti) for a ~20-token answer, and
+    live reads queued behind each other (median 18 s from hand-off to result). Off: ~0.2-0.5 s.
+    Compare accuracy with `python vlm_eval.py --prompts v4:think v4`.
+    `keep_alive`: keep the model loaded between reads (Ollama unloads it after 5 idle
+    minutes by default, and reloading cost ~3 s on the next sign)."""
+
+    def __init__(self, model="gemma4:e4b", host=None, prompt=DEFAULT_PROMPT, think=False,
+                 keep_alive="2h"):
         import ollama
         self.client = ollama.Client(host=host) if host else ollama.Client()
         self.model, self.version = model, prompt
         self.prompt = PROMPTS[prompt]
+        self.think, self.keep_alive = think, keep_alive
+
+    def warm_up(self):
+        """Load the model now, so the first sign doesn't wait for it."""
+        try:
+            self.client.chat(model=self.model, messages=[{"role": "user", "content": "hi"}],
+                             think=self.think, keep_alive=self.keep_alive,
+                             options={"num_predict": 1})
+        except Exception as e:  # noqa: BLE001
+            print(f"[vlm] warm-up failed (the first read will be slower): {e}")
 
     def __call__(self, crop, retries=1, wait_s=3.0):
         """One retry after a pause: Ollama's server can die when the GPU is short of memory
@@ -136,7 +154,8 @@ class SignReader:
                 resp = self.client.chat(
                     model=self.model,
                     messages=[{"role": "user", "content": self.prompt, "images": [buf.tobytes()]}],
-                    format="json", options={"temperature": 0})
+                    format="json", options={"temperature": 0},
+                    think=self.think, keep_alive=self.keep_alive)
                 break
             except Exception as e:  # noqa: BLE001
                 if attempt == retries:

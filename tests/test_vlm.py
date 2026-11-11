@@ -81,6 +81,7 @@ def test_reader_retries_once(monkeypatch):
             return {"message": {"content": json.dumps({"entries": [{"text": "Exit", "arrow": "left"}]})}}
     r = vlm.SignReader.__new__(vlm.SignReader)
     r.client, r.model, r.version, r.prompt = Client(), "m", "v4", vlm.PROMPTS["v4"]
+    r.think, r.keep_alive = False, "2h"
     monkeypatch.setattr(vlm.time, "sleep", lambda s: None)
     import numpy as np
     entries, raw = r(np.zeros((20, 40, 3), np.uint8))

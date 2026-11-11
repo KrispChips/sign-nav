@@ -87,11 +87,17 @@ def score_sign(gt, read, symbols=()):
 
 
 class Reader:
-    def __init__(self, version, model, host):
+    def __init__(self, name, model, host):
+        """name: a prompt version, with ":think" to let Gemma reason first (e.g. v4:think).
+        Reads cached before `think` existed were made with thinking on, so they keep the old
+        tag; thinking-off reads get "|nothink"."""
         import vlm
-        self.version = version
-        self.reader = vlm.SignReader(model, host, version)
+        version, _, mode = name.partition(":")
+        self.version, think = version, mode == "think"
+        self.reader = vlm.SignReader(model, host, version, think=think)
         self.tag = f"gemma|{model}|{hashlib.sha256(self.reader.prompt.encode()).hexdigest()[:16]}"
+        if not think:
+            self.tag += "|nothink"
 
     def __call__(self, crop, cache):
         key = Cache.key(crop, self.tag)

@@ -88,6 +88,9 @@ def main():
                     help="head yaw from the glasses via the phone app (port 9003)")
     ap.add_argument("--fps", type=float, default=5.0, help="processing rate")
     ap.add_argument("--model", default="gemma4:e4b")
+    ap.add_argument("--think", action="store_true",
+                    help="let Gemma reason before reading: ~5 points better arrows, ~10x slower "
+                         "(~2.5 s a sign instead of ~0.25 s)")
     ap.add_argument("--ollama-host", default=None)
     ap.add_argument("--box-thr", type=float, default=0.30)
     ap.add_argument("--ready-q", type=float, default=0.5)
@@ -140,7 +143,8 @@ def main():
         sign_filter = SignFilter(OcrCheck(a.ocr_min_conf, a.ocr_min_chars),
                                  None if a.no_clip else ClipCheck(margin=a.clip_margin,
                                                                   device=detector.device))
-    reader = SignReader(a.model, a.ollama_host)
+    reader = SignReader(a.model, a.ollama_host, think=a.think)
+    reader.warm_up()
     legibility = None
     if not a.no_legibility:
         if os.path.exists(a.legibility):
@@ -188,6 +192,8 @@ def main():
             if legibility is not None:
                 triggers[tr.id].read_result(False)
             return
+        print(f"[vlm] track {tr.id}: read in {time.time() - job['sent']:.1f} s "
+              f"({len(entries)} entries)", flush=True)
         mount = mounting(info["theta"], info["frontality"])
         rel = heading.relative(tr.last_theta, tr.last_yaw)   # where it is NOW-ish
         sentence = describe(entries, rel, mount)
@@ -228,7 +234,8 @@ def main():
                     triggers[tr.id].read_result(False)   # not a sign (yet): counts as a failed read
                 return
         sent_to_vlm += 1
-        pending[pool.submit(reader, crop)] = {"track": tr, "info": info, "ocr": ocr_text}
+        pending[pool.submit(reader, crop)] = {"track": tr, "info": info, "ocr": ocr_text,
+                                              "sent": time.time()}
         cv2.imwrite(os.path.join(a.debug_dir, f"track{tr.id:04d}.jpg"), crop)
         chat.sign_pending(tr, t, check["reason"] if check else None)
 

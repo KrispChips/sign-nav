@@ -201,7 +201,10 @@ class GemmaReader:
     def __init__(self, model="gemma4:e4b", host=None, prompt=None):
         import vlm
         self.reader = vlm.SignReader(model, host, prompt or vlm.DEFAULT_PROMPT)
+        # reads cached before vlm.SignReader got `think` were made with thinking on
         self.tag = f"gemma|{model}|{hashlib.sha256(self.reader.prompt.encode()).hexdigest()[:16]}"
+        if not self.reader.think:
+            self.tag += "|nothink"
 
     def __call__(self, crop):
         entries, raw = self.reader(crop)
