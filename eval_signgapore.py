@@ -103,12 +103,13 @@ def cmd_read(a):
                "--hfov", f"{hfov_of(scen):.1f}", "--fps", str(a.fps), "--no-intersections",
                "--no-tts", "--debug-dir", out]
         print(f"[read] E{a.env}/{name} ...", flush=True)
-        with open(os.path.join(out, "run.txt"), "w", encoding="utf-8") as log:
-            r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
+        with open(os.path.join(out, "run.txt"), "w", encoding="utf-8", errors="replace") as log:
+            r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                               env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         if r.returncode != 0:
             print(f"[read] E{a.env}/{name} FAILED (see {out}/run.txt)", flush=True)
             if os.path.exists(reads):
-                os.rename(reads, reads + ".partial")
+                os.replace(reads, reads + ".partial")
 
 
 # ---------------------------------------------------------------- score

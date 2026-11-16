@@ -72,6 +72,13 @@ def _legibility_label(m, d, model):
 
 
 def main():
+    # Signs carry any script (Chinese, Tamil, ...): never crash printing them to a console or
+    # a log file in a narrow Windows codepage.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, help="video file, rtsp/http URL, or webcam index")
     ap.add_argument("--calib", help="calibration .npz from calibrate.py")
