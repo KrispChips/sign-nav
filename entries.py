@@ -8,7 +8,7 @@ them, so under the multi-building rule "014-100" is one room, not a range from 1
 Type order: RANGE, ROOM, BUILDING, FLOOR, AREA, FACILITY, NAMED, UNKNOWN."""
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import facilities
@@ -57,7 +57,7 @@ class Normalized:
     repaired: bool = False          # an OCR digit repair was applied
 
 
-def normalize(text: str) -> Normalized:
+def normalize(text: str, keep_prefixes: tuple[str, ...] = ()) -> Normalized:
     """NFKC + upper case, plain hyphens, fillers stripped (and recorded), punctuation dropped
     except - / , & (plus @ and parentheses, which parse_entry uses), OCR digit repair."""
     t = unicodedata.normalize("NFKC", str(text))
@@ -85,7 +85,9 @@ def normalize(text: str) -> Normalized:
             return tok   # alphabetic words (and codes like TE14, L2, B1) are never touched
         out = []
         for i, c in enumerate(tok):
-            if c == "O" or (c in "IL" and (i > 0 or len(tok) >= 4)):
+            if i == 0 and c in keep_prefixes:
+                out.append(c)   # the building's own prefix letter (L3-07), not a digit
+            elif c == "O" or (c in "IL" and (i > 0 or len(tok) >= 4)):
                 out.append("0" if c == "O" else "1")   # a leading L/I is a prefix (L12 = level)
             else:
                 out.append(c)
@@ -173,7 +175,7 @@ _CODE = re.compile(r"^(?=.*[A-Z])(?=.*\d)[A-Z0-9-]{2,8}$")   # MD7, TE14, E2I
 def parse_entry(text: str, arrow: Optional[str], rule: BuildingRule) -> list[ParsedEntry]:
     """One VLM entry -> one or more ParsedEntry (compound entries are split)."""
     arrow = canonical_arrow(arrow)
-    norm = normalize(text)
+    norm = normalize(text, rule.keep_prefixes)
     m = _TAIL.search(norm.text)
     head, tail = (norm.text[:m.start()], norm.text[m.start():]) if m else (norm.text, "")
     pieces = [p for p in _SPLIT.split(head) if p.strip()]
@@ -219,8 +221,7 @@ def _parse_one(text: str, arrow: str, rule: BuildingRule, source: str,
     found = rule.find_rooms(room_text)
     if found:
         if building is not None and room_text is not core:   # "BLDG 14 ROOM 100"
-            found = [(RoomId(r.text, r.key, r.suffix, r.building or building, r.floor), s, e)
-                     for r, s, e in found]
+            found = [(replace(r, building=r.building or building), s, e) for r, s, e in found]
         out = []
         if len(found) >= 2 and core[found[0][2]:found[1][1]].strip() in _CONNECTORS:
             lo, hi = found[0][0], found[1][0]

@@ -132,8 +132,16 @@ print(m.explain())
   (partial ratio < 80) the confidence is halved: get closer and re-read.
 - **Arrows**: `entries.canonical_arrow()` maps dataset words to the VLM vocabulary
   (straight -> up, straight-left -> up-left, locational -> none).
-- **Building configs**: `default` (214, 1204 = floor 12, B12 = floor -1), `multi_building`
-  (014-100), `singapore_units` (#04-01, #B1-05). Add one YAML per building.
+- **Any building, no config** (`roomid.py`): `rule_for_goal(goal)` reads the goal's written
+  form (`014-190`, `A140`, `C2.15`, `1200`, `120B`, `L3-07`, `#04-03`) as a shape and builds the
+  rule from it, so signs are read the goal's way: `14-100` is building 14 room 100 for goal
+  `014-190` but rooms 14 to 100 for a plain-number goal; a plate missing the goal's prefix or
+  building (`190`, `140`) is a partial match (confidence x0.6 until `Context` knows the
+  building / wing); a different prefix (`B140` for `A140`) contradicts. Floors guessed from
+  room numbers are hints only: their contradictions are marked `weak`. Named goals use a
+  no-hint rule (different digit counts = building-room, equal = range).
+- **Building configs** (optional overrides): `default` (214, 1204 = floor 12, B12 = floor -1),
+  `multi_building` (014-100), `singapore_units` (#04-01, #B1-05); `rule_for_goal(goal, override=...)`.
 
 Tests: `python -m pytest`. Parser and matcher tables, 40 hand-written signs with expected
 results (`tests/data/synthetic_signs.json`), pinned edge cases with the deferred ones skipped

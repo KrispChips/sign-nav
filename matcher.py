@@ -17,6 +17,7 @@ from entries import ParsedEntry, normalize, parse_entry
 from targets import BuildingRule, RoomId, Target
 
 NAMED_MIN_SCORE = 90      # fuzzy alias match
+PARTIAL_WEIGHT = 0.6      # a room ID missing the goal's prefix/building/section ("190" for 014-190)
 OCR_MIN_SCORE = 80        # below this the VLM's text isn't backed by OCR: halve confidence
 
 
@@ -37,13 +38,19 @@ class Context:
     """What the navigation stack knows about where the user is."""
     user_floor: Optional[int] = None
     user_building: Optional[int] = None
+    user_prefix: Optional[str] = None     # wing/block letters established (A for A140)
+    user_section: Optional[int] = None    # level/section established (2 for C2.15)
 
 
 @dataclass
 class EntryMatch:
     entry: ParsedEntry
     level: MatchLevel = MatchLevel.NONE
-    contradiction: Optional[str] = None   # "building", "floor", "range", "area", "facility"
+    contradiction: Optional[str] = None   # "building", "section", "prefix", "floor", "range",
+                                          # "area", "facility"
+    weak: bool = False                    # contradiction resting on a floor guessed from a
+                                          # room number: a hint, never rules the sign out
+    weight: float = 1.0                   # < 1 for partial IDs (scales the sign's confidence)
     detail: str = ""
     key_text: str = ""                    # what to look for in the OCR text
     score: float = 0.0                    # within a level: decides ties (and so ambiguity)
@@ -52,7 +59,7 @@ class EntryMatch:
     def line(self) -> str:
         s = f"{self.entry.raw!r} -> {self.entry.arrow}: {self.level.name}"
         if self.contradiction:
-            s += f" (contradicts: {self.contradiction})"
+            s += f" (contradicts: {self.contradiction}{', weak' if self.weak else ''})"
         return s + (f" [{self.detail}]" if self.detail else "")
 
 
@@ -73,6 +80,11 @@ class SignMatch:
     ocr_ok: Optional[bool] = None    # None when no OCR text was given
 
     @property
+    def partial(self) -> bool:
+        """The best entry is a partial ID (missing the goal's prefix/building/section)."""
+        return self.best is not None and self.best.weight < 1.0
+
+    @property
     def entry(self) -> Optional[ParsedEntry]:
         return self.best.entry if self.best else None
 
@@ -83,6 +95,7 @@ class SignMatch:
         else:
             b = self.best
             ocr = {None: "", True: ", OCR agrees", False: ", OCR disagrees (halved)"}[self.ocr_ok]
+            ocr += ", partial ID" if self.partial else ""
             parts.append(f"{self.level.name} via {b.entry.raw!r} -> {b.entry.arrow}"
                          f" (conf {self.confidence:.2f}{ocr})" + (f" [{b.detail}]" if b.detail else ""))
             if self.arrived:
@@ -94,7 +107,8 @@ class SignMatch:
                                                        for t in self.ties))
         if self.contradictions:
             parts.append("contradicts: " + ", ".join(
-                f"{c.entry.raw!r} -> {c.entry.arrow} ({c.contradiction}: {c.detail})"
+                f"{c.entry.raw!r} -> {c.entry.arrow} ({c.contradiction}"
+                f"{', hint only' if c.weak else ''}: {c.detail})"
                 for c in self.contradictions))
         return "; ".join(parts)
 
@@ -122,36 +136,64 @@ def match_entry(target: Target, entry: ParsedEntry, context: Optional[Context] =
     return m
 
 
-def _set(m: EntryMatch, level: MatchLevel, detail: str, key_text: str, score: float = 1.0):
+def _set(m: EntryMatch, level: MatchLevel, detail: str, key_text: str, score: float = 1.0,
+         weight: float = 1.0):
     if level > m.level or (level == m.level and score > m.score):
-        m.level, m.detail, m.key_text, m.score = level, detail, key_text, score
-        m.contradiction = None   # an entry that helps isn't a contradiction
+        m.level, m.detail, m.key_text, m.score, m.weight = level, detail, key_text, score, weight
+        m.contradiction, m.weak = None, False   # an entry that helps isn't a contradiction
 
 
-def _contradict(m: EntryMatch, kind: str, detail: str):
+def _contradict(m: EntryMatch, kind: str, detail: str, weak: bool = False):
     if m.level == MatchLevel.NONE and not m.contradiction:
-        m.contradiction, m.detail = kind, detail
+        m.contradiction, m.detail, m.weak = kind, detail, weak
+
+
+def _clash(t: RoomId, r: RoomId) -> Optional[tuple[str, str]]:
+    """A part both IDs show that differs: B140 is not A140, 015-190 is not 014-190."""
+    if t.building is not None and r.building is not None and r.building != t.building:
+        return "building", f"{r} is in building {r.building}, not {t.building}"
+    if t.prefix and r.prefix and r.prefix != t.prefix:
+        return "prefix", f"{r} is {r.prefix}, not {t.prefix}"
+    if t.section is not None and r.section is not None and r.section != t.section:
+        return "section", f"{r} is in section {r.section}, not {t.section}"
+    return None
+
+
+def _weight(t: RoomId, r: RoomId, ctx: Context) -> float:
+    """Full when the sign's ID shows every part the goal has, or the missing parts are already
+    established (a building sign, earlier plates); PARTIAL_WEIGHT otherwise."""
+    missing = ((t.building is not None and r.building is None and ctx.user_building != t.building)
+               or (bool(t.prefix) and not r.prefix and ctx.user_prefix != t.prefix)
+               or (t.section is not None and r.section is None and ctx.user_section != t.section))
+    return PARTIAL_WEIGHT if missing else 1.0
 
 
 def _match_room(target: Target, e: ParsedEntry, ctx: Context, m: EntryMatch):
     t = target.room
     if e.type == "ROOM" or e.rooms:
         for r in e.rooms:
-            if t.building is not None and r.building is not None and r.building != t.building:
-                _contradict(m, "building", f"{r} is in building {r.building}, not {t.building}")
+            clash = _clash(t, r)
+            w = _weight(t, r, ctx)
+            if clash:
+                _contradict(m, *clash)
             elif r.key == t.key and r.suffix == t.suffix:
-                _set(m, MatchLevel.EXACT, f"names {r}", r.text)
+                _set(m, MatchLevel.EXACT, f"names {r}" + (" (partial ID)" if w < 1 else ""),
+                     r.text, w, w)
             elif r.key == t.key:   # 214 vs 214A: same number, different suffix
-                _set(m, MatchLevel.RANGE, f"{r} is the same number as {t}", r.text, 0.5)
+                _set(m, MatchLevel.RANGE, f"{r} is the same number as {t}", r.text, 0.5 * w, w)
     for lo, hi in e.ranges:
-        if not (lo.same_building(t) and hi.same_building(t)):
-            _contradict(m, "building", f"{lo}..{hi} is in building {lo.building}, not {t.building}")
+        clash = _clash(t, lo) or _clash(t, hi)
+        w = min(_weight(t, lo, ctx), _weight(t, hi, ctx))
+        if clash:
+            _contradict(m, clash[0], f"{lo}..{hi}: {clash[1]}")
         elif _in_range(t, lo, hi, e.parity):
-            _set(m, MatchLevel.RANGE, f"{t} is in {lo}..{hi}" + (f" ({e.parity})" if e.parity else ""),
-                 lo.text)
+            _set(m, MatchLevel.RANGE, f"{t} is in {lo}..{hi}" + (f" ({e.parity})" if e.parity else "")
+                 + (" (partial IDs)" if w < 1 else ""), lo.text, w, w)
             m.specificity = max(m.specificity, _range_specificity(lo, hi))
         elif t.floor is not None and lo.floor == hi.floor == t.floor:
-            _contradict(m, "range", f"{lo}..{hi} is on floor {t.floor} but doesn't contain {t}")
+            # Both floors are guessed from numbers: a hint for routing, never a ruling.
+            _contradict(m, "range", f"{lo}..{hi} is on floor {t.floor} but doesn't contain {t}",
+                        weak=True)
     if e.type == "BUILDING" and target.building is not None:
         if e.building == target.building:
             _set(m, MatchLevel.BUILDING, f"building {e.building}", e.raw)
@@ -186,7 +228,8 @@ def _match_floor(target: Target, e: ParsedEntry, ctx: Context, m: EntryMatch, ex
         if target.floor in e.floors:
             _set(m, MatchLevel.EXACT if exact else MatchLevel.FLOOR, f"floor {target.floor}", e.raw)
         else:
-            _contradict(m, "floor", f"floor {'/'.join(map(str, e.floors))}, target is on {target.floor}")
+            _contradict(m, "floor", f"floor {'/'.join(map(str, e.floors))}, target is on {target.floor}",
+                        weak=not target.floor_stated)
     if (e.type == "FACILITY" and e.facility in facilities.FLOOR_CHANGERS and target.floor is not None
             and ctx.user_floor is not None and ctx.user_floor != target.floor):
         _set(m, MatchLevel.SUBGOAL, f"{e.facility}: target is on floor {target.floor}, "
@@ -197,11 +240,12 @@ def _match_area(target: Target, e: ParsedEntry, m: EntryMatch, exact: bool):
     if e.type != "AREA" or not target.area:
         return
     (tk, tv), (ek, ev) = target.area, e.area
-    same_kind = tk == ek or "DIRECTION" in (tk, ek)
+    # "*": a wing/block letter taken from the goal's room ID (A140), whatever word the sign uses.
+    same_kind = tk == ek or "DIRECTION" in (tk, ek) or (tk == "*" and ek != "DIRECTION")
     if same_kind and tv == ev:
         _set(m, MatchLevel.EXACT if exact else MatchLevel.AREA, " ".join(e.area), e.raw)
-    elif tk == ek:
-        _contradict(m, "area", f"{ek} {ev}, target is {tk} {tv}")
+    elif tk == ek or (tk == "*" and same_kind and ev.isalpha() and len(ev) == len(tv)):
+        _contradict(m, "area", f"{ek} {ev}, target is {tv}")
 
 
 def _match_facility(target: Target, e: ParsedEntry, m: EntryMatch):
@@ -271,7 +315,7 @@ def match_sign(target: Target, entries: Iterable[EntryLike], rule: BuildingRule,
     best = max(ties, key=lambda r: (r.specificity, fuzz.ratio(asked, r.entry.raw)))
     ambiguous = len({r.entry.arrow for r in ties}) > 1
 
-    confidence, ocr_ok = best.entry.confidence, None
+    confidence, ocr_ok = best.entry.confidence * best.weight, None
     if ocr_text is not None:
         key = normalize(best.key_text or best.entry.raw).text
         ocr_ok = fuzz.partial_ratio(key, normalize(ocr_text).text) >= OCR_MIN_SCORE

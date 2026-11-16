@@ -18,12 +18,17 @@ CONFIG_DIR = Path(__file__).resolve().parent / "config" / "buildings"
 class RoomId:
     """One room ID. `key` holds the numeric groups (compared numerically, so 014 == 14),
     `suffix` the letter after the number (214A). `building` is None when the ID doesn't
-    say (then it means "the current building")."""
+    say (then it means "the current building"). `floor` is always inferred from the number,
+    so it is a hint only. Generic (goal-shaped) rules also fill `prefix` (wing/block letters,
+    A in A140) and `section` (a level or section number that isn't a building: 2 in C2.15);
+    None means the ID doesn't show that part."""
     text: str
     key: tuple[int, ...]
     suffix: str = ""
     building: Optional[int] = None
     floor: Optional[int] = None
+    prefix: Optional[str] = None
+    section: Optional[int] = None
 
     def same_building(self, other: "RoomId") -> bool:
         return self.building is None or other.building is None or self.building == other.building
@@ -43,6 +48,7 @@ class BuildingRule:
     basement_group: Optional[str]
     ground_floor: int
     building_regexes: tuple[re.Pattern, ...]
+    keep_prefixes: tuple[str, ...] = ()   # leading letters OCR repair must not turn into digits
 
     def find_rooms(self, text: str) -> list[tuple[RoomId, int, int]]:
         """All room IDs in normalized text, with their (start, end) spans."""
@@ -104,11 +110,14 @@ def load_rule(name_or_path: str = "default") -> BuildingRule:
 @dataclass
 class Target:
     """What the user is looking for. `kind` says which fields matter:
-    room (room/room_id/floor/building), facility, area, building, floor, or named (aliases)."""
+    room (room/room_id/floor/building), facility, area, building, floor, or named (aliases).
+    `floor_stated` is True only when the floor was given in words ("Level 2"); a floor taken
+    from a room number is a hint and never rules a sign out."""
     raw: str
     kind: str
     room: Optional[RoomId] = None
     floor: Optional[int] = None
+    floor_stated: bool = False
     building: Optional[int] = None
     area: Optional[tuple[str, str]] = None        # ("WING", "EAST"), ("ZONE", "B"), ...
     facility: Optional[str] = None
@@ -146,6 +155,8 @@ def parse_target(text: str, rule: BuildingRule, aliases: tuple[str, ...] = (),
     names = list(aliases)
     if e is not None and e.type == "ROOM" and len(e.rooms) == 1:
         r = e.rooms[0]
+        if area is None and r.prefix and r.prefix != "L":   # A140: wing/block A, any word
+            area = ("*", r.prefix)
         return Target(text, "room", room=r, floor=r.floor, building=r.building, area=area,
                       aliases=names)
     if e is not None and e.type == "FACILITY":
@@ -156,7 +167,7 @@ def parse_target(text: str, rule: BuildingRule, aliases: tuple[str, ...] = (),
     if e is not None and e.type == "BUILDING":
         return Target(text, "building", building=e.building, aliases=names)
     if e is not None and e.type == "FLOOR" and len(e.floors) == 1:
-        return Target(text, "floor", floor=e.floors[0], aliases=names)
+        return Target(text, "floor", floor=e.floors[0], floor_stated=True, aliases=names)
     from entries import normalize
     name = normalize(text).text
     return Target(text, "named", aliases=[name] + [a for a in names if a != name])
