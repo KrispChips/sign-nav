@@ -101,7 +101,7 @@ def cmd_read(a):
             os.remove(reads)
         cmd = [sys.executable, "main.py", "--source", os.path.join(scen, "rgb.mp4"),
                "--hfov", f"{hfov_of(scen):.1f}", "--fps", str(a.fps), "--no-intersections",
-               "--no-tts", "--debug-dir", out]
+               "--no-tts", "--debug-dir", out] + a.main_args
         print(f"[read] E{a.env}/{name} ...", flush=True)
         with open(os.path.join(out, "run.txt"), "w", encoding="utf-8", errors="replace") as log:
             r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
@@ -221,6 +221,8 @@ def main():
             p.add_argument("--fps", type=float, default=3.0, help="frames processed per second")
             p.add_argument("--force", action="store_true", help="re-read cached scenarios")
             p.add_argument("--only", nargs="*", help="scenario names, e.g. S0 S3")
+            p.add_argument("--main-args", nargs=argparse.REMAINDER, default=[],
+                           help="extra main.py options (last), e.g. --main-args --crop-context 0.5")
     a = ap.parse_args()
     {"read": cmd_read, "score": cmd_score}[a.cmd](a)
 

@@ -128,6 +128,12 @@ def source_px_per_crop_px(H, crop_shape):
     return float(np.linalg.norm(p[:, 1] - p[:, 0]))
 
 
+# Context kept around every sign crop, as a fraction of its height on each side. The detector
+# sometimes boxes only part of a sign (the "DROP OFF" label of a taxi sign) while the pictograms
+# and arrow it belongs to sit next to it; set from main.py --crop-context.
+CONTEXT = 0.06
+
+
 def rectify(image, box, K, max_h=400, margin=0.06):
     h, w = image.shape[:2]
     x1, y1, x2, y2 = [float(v) for v in box]
@@ -146,7 +152,7 @@ def rectify(image, box, K, max_h=400, margin=0.06):
     side = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
     out_h = int(np.clip(side, 16, max_h))
     out_w = int(np.clip(out_h * aspect, 16, 4 * max_h))
-    m = int(round(margin * out_h))   # keep a little context: arrows often sit at the edge
+    m = int(round(max(margin, CONTEXT) * out_h))   # context: arrows often sit at the edge
     dst = np.array([[m, m], [m + out_w, m], [m + out_w, m + out_h], [m, m + out_h]], np.float32)
     H = cv2.getPerspectiveTransform(quad.astype(np.float32), dst)
     crop = cv2.warpPerspective(image, H, (out_w + 2 * m, out_h + 2 * m), flags=cv2.INTER_CUBIC,

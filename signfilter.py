@@ -55,14 +55,31 @@ def ocr_engine(side_len=OCR_SIDE_LEN):
     return engine
 
 
+def elongated_tiles(crop, max_aspect=2.0, overlap=0.25, max_tiles=8):
+    """A long banner ("DINING @ B3 | EVENT HALL ... @ B4 | ION PATERSON LINK", ~10:1) would be
+    shrunk to OCR_SIDE_LEN on its LONG side, its text to a few pixels, and rejected. Cut crops
+    longer than `max_aspect` into overlapping near-square tiles instead; others pass whole."""
+    h, w = crop.shape[:2]
+    long_, short = max(h, w), min(h, w)
+    if short == 0 or long_ <= max_aspect * short:
+        return [crop]
+    size = int(1.5 * short)
+    step = max(1, int(size * (1 - overlap)))
+    n = min(max_tiles, 1 + -(-(long_ - size) // step))
+    starts = [round(i * (long_ - size) / max(1, n - 1)) for i in range(n)]
+    return [crop[:, s:s + size] if w >= h else crop[s:s + size, :] for s in starts]
+
+
 class OcrCheck:
     def __init__(self, min_conf=0.6, min_chars=2, side_len=OCR_SIDE_LEN, engine=None):
         self.engine = engine or ocr_engine(side_len)
         self.min_conf, self.min_chars = min_conf, min_chars
 
     def __call__(self, crop):
-        r = self.engine(crop, use_det=True, use_cls=False, use_rec=True)
-        lines = list(zip(r.txts or (), r.scores or ()))
+        lines = []
+        for tile in elongated_tiles(crop):
+            r = self.engine(tile, use_det=True, use_cls=False, use_rec=True)
+            lines += list(zip(r.txts or (), r.scores or ()))
         n = sum(len(re.findall(r"[0-9A-Za-z]", t)) for t, c in lines if c >= self.min_conf)
         text = " | ".join(f"{t} ({c:.2f})" for t, c in lines)
         return n >= self.min_chars, n, text

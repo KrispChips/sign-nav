@@ -130,6 +130,10 @@ def main():
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--out-video", help="write an annotated video (scene + chat log), e.g. annotated.mp4")
     ap.add_argument("--no-tts", action="store_true")
+    ap.add_argument("--crop-context", type=float, default=None,
+                    help="context kept around each sign crop, in crop heights per side (default "
+                         "0.06). Experimental: 0.5 cost 5 goals on SiGNgapore E4, since "
+                         "neighbouring signs' arrows get pulled in")
     ap.add_argument("--goal", help="room or place to guide to (any numbering: 014-190, A140, "
                                    "C2.15, 1200, a name); only what helps reach it is spoken")
     ap.add_argument("--rule", help="optional building numbering override (config/buildings/<name>)")
@@ -144,6 +148,9 @@ def main():
     if a.announce == "goal" and not a.goal:
         ap.error("--announce goal needs --goal")
 
+    if a.crop_context is not None:
+        import rectify
+        rectify.CONTEXT = a.crop_context
     from detector import DISTRACTORS, SignDetector   # heavy imports after arg parsing
     from vlm import SignReader
     from intersection import DepthEstimator, IntersectionWatcher, PlaceTracker, resolve_model
