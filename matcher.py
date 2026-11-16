@@ -264,6 +264,13 @@ _DISTINCT = re.compile(r"\b(?:[A-Z]*\d[A-Z0-9]*|[A-Z])\b")
 
 def _match_named(target: Target, e: ParsedEntry, m: EntryMatch):
     candidates = {c for c in (e.name, e.raw, normalize(e.source).text if e.source else None) if c}
+    # "ION STATION (EVENT HALL)@B4": also the bracketed name, the part before "@", and the
+    # text without punctuation, so words glued to brackets / tags still count.
+    for c in list(candidates):
+        candidates.update(x.strip() for x in re.findall(r"\(([^)]*)\)", c))
+        candidates.add(c.split("@")[0].strip())
+        candidates.add(re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]", " ", c)).strip())
+    candidates.discard("")
     best, best_c = 0.0, ""
     for alias in target.aliases:
         a = normalize(alias).text
