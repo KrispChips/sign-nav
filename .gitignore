@@ -11,3 +11,8 @@ data/
 debug_*/
 debug_*_run.txt
 debug_signgapore/
+
+# local crops for the prompt playground (dataset images are not ours to redistribute)
+notebooks/samples/*
+!notebooks/samples/.gitkeep
+.ipynb_checkpoints/
