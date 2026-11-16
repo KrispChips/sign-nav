@@ -42,7 +42,8 @@ In scope:
 
 Out of scope (later steps): memory/map and route planning across junctions, a learned
 "glance" classifier that decides which signs are worth reading, priors about building layout,
-setting the goal by voice.
+setting the goal by voice, reading posted building maps (directory maps, fire-evacuation
+plans) to learn the layout.
 
 ## Existing pieces to build on
 
