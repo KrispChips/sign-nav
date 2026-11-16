@@ -6,6 +6,10 @@ Serves the same three things the app does (docs/LIVE.md):
                                    speak it (dropping ones that waited past their ttl_s)
   tcp :9003                        yaw lines {"yaw_deg": ...}: 0, or a slow sweep (--yaw-sweep)
 
+Type to play the user (sent back on :9002 like the app does): a line is recognised speech
+("read it", "I usually go left"); "!button", "!select", "!capture", "!nav left" are the
+app's Read it button and glasses gestures.
+
   python tools/fake_phone.py walk.mp4
   python main.py --source http://localhost:8080/frames.mjpg --speak-to localhost:9002 \\
       --imu-from localhost:9003 --hfov 70 --no-tts --show
@@ -112,13 +116,48 @@ def mjpeg_handler(latest):
     return Handler
 
 
+def event_line(typed: str) -> dict:
+    """What the user typed -> the app's input event (docs/LIVE.md)."""
+    typed = typed.strip()
+    if typed.startswith("!"):
+        name, _, arg = typed[1:].partition(" ")
+        ev = {"event": name.strip().lower(), "t": round(time.time(), 3)}
+        if arg.strip():
+            ev["direction"] = arg.strip().lower()
+        return ev
+    return {"event": "speech", "text": typed, "t": round(time.time(), 3)}
+
+
 class SpeechHandler(socketserver.StreamRequestHandler):
     """Prints sentences the way the phone would speak them: in order, ~0.08 s per character,
-    dropping ones that waited in the queue past their ttl_s."""
+    dropping ones that waited in the queue past their ttl_s. `send()` writes input events back
+    to every connected PC, as the app does."""
     spoken = []      # (kind, text) for tests
+    writers = []
+
+    @classmethod
+    def send(cls, ev: dict):
+        line = (json.dumps(ev) + "\n").encode("utf-8")
+        for w in list(cls.writers):
+            try:
+                w.write(line)
+                w.flush()
+            except OSError:
+                cls.writers.remove(w)
 
     def handle(self):
+        SpeechHandler.writers.append(self.wfile)
         print(f"[speech] PC connected from {self.client_address[0]}", flush=True)
+        try:
+            self._read()
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass   # the PC went away (main.py ended)
+        finally:
+            if self.wfile in SpeechHandler.writers:
+                SpeechHandler.writers.remove(self.wfile)
+        print("[speech] PC disconnected", flush=True)
+
+    def _read(self):
         for raw in self.rfile:
             try:
                 msg = json.loads(raw)
@@ -128,7 +167,6 @@ class SpeechHandler(socketserver.StreamRequestHandler):
             print(f"[speech] {msg.get('kind', '?'):5s} ttl {msg.get('ttl_s')}s: {msg.get('text')}",
                   flush=True)
             SpeechHandler.spoken.append((msg.get("kind"), msg.get("text"), arrived))
-        print("[speech] PC disconnected", flush=True)
 
 
 class YawHandler(socketserver.StreamRequestHandler):
@@ -178,7 +216,13 @@ def main():
     a = ap.parse_args()
     serve(a.video, fps=a.fps, quality=a.quality, yaw_sweep=a.yaw_sweep, loop=not a.once)
     print("fake phone: http://localhost:8080/frames.mjpg, speech :9002, yaw :9003 (Ctrl+C to stop)")
+    print("type what the user says (or !button / !select / !capture / !nav left)")
     try:
+        for line in sys.stdin:
+            if line.strip():
+                ev = event_line(line)
+                SpeechHandler.send(ev)
+                print(f"[you] {ev}", flush=True)
         while True:
             time.sleep(1)
     except KeyboardInterrupt:

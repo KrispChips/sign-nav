@@ -5,6 +5,7 @@ or IP, or localhost with `adb forward`) and the PC needs no inbound firewall rul
 
   http://<phone>:8080/frames.mjpg   glasses frames, MJPEG     -> main.py --source
   tcp  <phone>:9002                 sentences to speak        <- PhoneSpeaker (--speak-to)
+                                    and user input back       -> PhoneSpeaker.events
   tcp  <phone>:9003                 head yaw from the glasses -> TcpImu (--imu-from)
 
 Both TCP links reconnect on their own: the phone can come and go during a walk."""
@@ -73,15 +74,24 @@ class _Reconnecting:
                 pass
 
 
+EVENTS = ("speech", "select", "button", "capture", "nav")
+
+
 class PhoneSpeaker(_Reconnecting):
     """Sends sentences to the phone app, which speaks them through the glasses.
     One JSON line each: {"text", "kind": "sign"|"place", "t": unix time, "ttl_s"}. The phone
     drops a sentence still waiting in its speech queue `ttl_s` after it arrived. Sentences
-    decided while the phone is unreachable are held until they expire."""
+    decided while the phone is unreachable are held until they expire.
+
+    The same connection carries the user's input back, one JSON line each (docs/LIVE.md):
+    {"event": "speech", "text": "read it"} (recognised speech), "button" (the app's Read it
+    button), "select" / "capture" / "nav" + "direction" (glasses gestures); plus "t" (phone
+    time). They land in `events` as dicts, stamped with the PC's arrival time "t_pc"."""
 
     def __init__(self, addr, ttl=None):
         self.ttl = dict(TTL_S, **(ttl or {}))
         self.q = queue.Queue()
+        self.events = queue.Queue()
         super().__init__(addr, "speak-to")
 
     def send(self, text, kind="sign"):
@@ -104,15 +114,39 @@ class PhoneSpeaker(_Reconnecting):
                 raise
 
     def _watch_close(self, s):
-        """The phone never sends anything back; a read returning means it hung up. Without
-        this a dead link is only noticed at the next sentence."""
+        """Reads the user's input events; the read ending means the phone hung up (without
+        this a dead link is only noticed at the next sentence)."""
+        buf = b""
         try:
-            while s.recv(1024):
-                pass
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    self._event(line)
         except OSError:
             pass
         if self.sock is s:
             self.q.put(None)              # wake the sender so it reconnects
+
+    def _event(self, line: bytes):
+        try:
+            ev = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return
+        if isinstance(ev, dict) and ev.get("event") in EVENTS:
+            ev["t_pc"] = time.time()
+            print(f"[input] {ev['event']}" + (f": {ev.get('text')!r}" if ev.get("text") else ""),
+                  flush=True)
+            self.events.put(ev)
+
+    def drain_events(self) -> list:
+        out = []
+        while not self.events.empty():
+            out.append(self.events.get())
+        return out
 
     def pending(self):
         return self.q.qsize()

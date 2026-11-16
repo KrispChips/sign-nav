@@ -159,3 +159,26 @@ def test_main_live_against_fake_phone(monkeypatch, tmp_path, corridor_video, cap
         for s in servers:
             s.shutdown()
             s.server_close()
+
+
+def test_input_events_come_back_on_the_speech_link():
+    port = free_port()
+    fake_phone.SpeechHandler.writers = []
+    srv = fake_phone._TCP(("127.0.0.1", port), fake_phone.SpeechHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    sp = PhoneSpeaker(("127.0.0.1", port))
+    try:
+        assert wait_for(lambda: fake_phone.SpeechHandler.writers)
+        for typed in ("read it", "!button", "!nav left"):
+            fake_phone.SpeechHandler.send(fake_phone.event_line(typed))
+        fake_phone.SpeechHandler.send({"event": "bogus"})       # unknown events are dropped
+        assert wait_for(lambda: sp.events.qsize() == 3)
+        evs = sp.drain_events()
+        assert [e["event"] for e in evs] == ["speech", "button", "nav"]
+        assert evs[0]["text"] == "read it" and evs[2]["direction"] == "left"
+        assert all("t_pc" in e for e in evs)
+        sp.send("still speaking")                               # the link stays two-way
+        assert wait_for(lambda: any(t == "still speaking" for _, t, _ in fake_phone.SpeechHandler.spoken))
+    finally:
+        sp.close()
+        stop_server(srv)

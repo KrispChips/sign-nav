@@ -49,6 +49,15 @@ def parse(text: str, expecting_note: bool = False) -> Command:
     return Command("unknown", t)
 
 
+_FIRST_PERSON = re.compile(r"^(?:i|i'm|im|i've|my|it|it's|its|remember|note|we)\b")
+
+
+def first_person(text: str) -> bool:
+    """Said by the user about their own route ("I usually go left", "it's on the right",
+    "remember ..."), not overheard chatter that happens to contain "left"."""
+    return bool(_FIRST_PERSON.match(_clean(text)))
+
+
 def from_gesture(event: str, direction: Optional[str] = None) -> Command:
     """Glasses Inputs / phone button events (section 4): select or the button reads what is
     waiting (or repeats); a capture press repeats."""

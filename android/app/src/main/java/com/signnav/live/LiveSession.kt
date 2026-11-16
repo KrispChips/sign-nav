@@ -25,6 +25,10 @@ object LiveSession {
   private var yawServer: YawServer? = null
   var speech: SpeechServer? = null
     private set
+  var voice: Voice? = null
+    private set
+  @Volatile var listen = true       // always-on voice commands
+  @Volatile var glassesMic = true   // use the glasses' microphones (Bluetooth SCO)
 
   @Volatile var running = false
     private set
@@ -39,6 +43,9 @@ object LiveSession {
     LiveService.start(app)
     frames.clear()
     if (speech == null) speech = SpeechServer(app, SPEECH_PORT)
+    if (voice == null) voice = Voice(app) { text -> sendEvent("speech", mapOf("text" to text)) }
+    speech?.onSpeaking = { on -> voice?.pause(on) }
+    if (listen) voice?.start(glassesMic)
     Thread {
       try {
         mjpeg = MjpegServer(frames, MJPEG_PORT).also { it.start() }
@@ -49,11 +56,13 @@ object LiveSession {
         AppLog.e("could not open the servers' ports: ${e.message}", e)
       }
     }.start()
-    glasses = Glasses(scope, frames) { y ->
+    glasses = Glasses(scope, frames, { y ->
       val v = if (invertYaw) -y else y
       yawDeg = v
       yawServer?.publish(v)
-    }.also { it.start(quality, streamFps) }
+    }, { event, direction ->
+      sendEvent(event, if (direction != null) mapOf("direction" to direction) else emptyMap())
+    }).also { it.start(quality, streamFps) }
   }
 
   fun stop(context: Context) {
@@ -66,6 +75,7 @@ object LiveSession {
     yawServer?.stop()
     yawServer = null
     speech?.stop() // keeps TTS alive for "test speech"; sockets closed
+    voice?.stop()
     yawDeg = null
     LiveService.stop(context.applicationContext)
     AppLog.i("stopped")
@@ -73,12 +83,27 @@ object LiveSession {
 
   fun resetYaw() = glasses?.resetYaw()
 
+  /** The user's input to the PC (speech, the Read it button, glasses gestures). Off the main
+   * thread: it writes to sockets. */
+  fun sendEvent(event: String, extra: Map<String, String> = emptyMap()) {
+    val sp = speech ?: return AppLog.i("press Start first (the PC link starts with it)")
+    Thread { sp.sendEvent(event, extra) }.start()
+  }
+
+  fun setListening(on: Boolean) {
+    listen = on
+    if (!running) return
+    if (on) voice?.start(glassesMic) else voice?.stop()
+  }
+
   fun status(): Map<String, String> {
     val g = glasses
     return linkedMapOf(
         "session" to (g?.sessionState ?: "-"),
         "stream" to (g?.streamState ?: "-"),
         "motion" to (g?.motionState ?: "-"),
+        "voice" to (voice?.state ?: "-") + ", heard: \"${voice?.lastHeard ?: "-"}\"",
+        "inputs sent to PC" to "${speech?.eventsSent ?: 0}",
         "inputs" to (g?.inputsState ?: "-"),
         "last input" to (g?.lastInput ?: "-"),
         "stream size" to (g?.streamSize ?: "-"),

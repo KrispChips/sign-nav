@@ -38,7 +38,13 @@ class LiveService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     try {
-      startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+      // + microphone (voice commands with the screen off) only once that permission is
+      // granted: declaring it without the permission throws.
+      val mic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+          android.content.pm.PackageManager.PERMISSION_GRANTED
+      startForeground(NOTIFICATION_ID, notification(),
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+              (if (mic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0))
     } catch (e: Exception) {
       AppLog.e("could not enter the foreground: ${e.message}", e)
       stopSelf()

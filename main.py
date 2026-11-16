@@ -212,7 +212,8 @@ def main():
     def guide_say(d, heard=None):
         """Speak, log and show a guide decision that isn't about one sign read."""
         glog.write(json.dumps(dict(d.log(), heard=heard)) + "\n"); glog.flush()
-        chat.guide(d.t, heard, d.text, d.kind)
+        if not d.reason.startswith("overheard"):   # ignored chatter: logged, not shown
+            chat.guide(d.t, heard, d.text, d.kind)
         if d.text:
             speaker.say(d.text, dedupe=False)
 
@@ -359,6 +360,18 @@ def main():
             heard = commands_in.get()
             if guide is not None:
                 guide_say(guide.hear(heard, frame.t), heard)
+        if speaker.remote is not None:   # the user's speech / gestures / button from the phone
+            for ev in speaker.remote.drain_events():
+                if guide is None:
+                    glog.write(json.dumps(dict(ev, decision="no goal")) + "\n"); glog.flush()
+                    continue
+                if ev["event"] == "speech":
+                    guide_say(guide.hear(ev.get("text", ""), frame.t, overheard=True),
+                              ev.get("text"))
+                else:
+                    from commands import from_gesture
+                    guide_say(guide.on_command(from_gesture(ev["event"], ev.get("direction")),
+                                               frame.t), f"[{ev['event']}]")
 
         if a.show or video:
             info = f"t={frame.t:6.1f}s  {1000*(time.time()-t0):.0f}ms/frame  reading={len(pending)}"

@@ -126,6 +126,11 @@ class MjpegServer(private val frames: FrameStore, port: Int = 8080) : TcpServer(
  * when they're the phone's Bluetooth audio device), never interrupting. A sentence still
  * waiting in the queue `ttl_s` after it ARRIVED is dropped: a hallway warning said late is
  * worse than none. (Arrival time, not "t", so the phone's and PC's clocks needn't agree.)
+ *
+ * The same connection carries the user's input back to the PC ([sendEvent]): one JSON line
+ * each, {"event": "speech", "text": ...} for voice, "button" for the Read it button, "select" /
+ * "capture" / "nav" (+ "direction") for glasses gestures, with "t" (phone time, unix s).
+ * [onSpeaking] says when speech starts and stops (the voice loop pauses meanwhile).
  */
 class SpeechServer(context: Context, port: Int = 9002) : TcpServer(port, "speech") {
   private data class Msg(val text: String, val kind: String, val arrivedMs: Long, val ttlMs: Long)
@@ -135,6 +140,30 @@ class SpeechServer(context: Context, port: Int = 9002) : TcpServer(port, "speech
   @Volatile var lastSpoken = ""
   @Volatile var spoken = 0
   @Volatile var dropped = 0
+  @Volatile var eventsSent = 0
+  @Volatile var onSpeaking: (Boolean) -> Unit = {}
+
+  /** Sends one input event to every connected PC; false if none is connected. */
+  fun sendEvent(event: String, extra: Map<String, String> = emptyMap()): Boolean {
+    val json = JSONObject().put("event", event).put("t", System.currentTimeMillis() / 1000.0)
+    extra.forEach { (k, v) -> json.put(k, v) }
+    val line = (json.toString() + "\n").toByteArray(Charsets.UTF_8)
+    var sent = false
+    synchronized(this) {
+      for (c in clients) {
+        try {
+          c.getOutputStream().apply { write(line); flush() }
+          sent = true
+        } catch (e: Exception) {
+          clients -= c
+          runCatching { c.close() }
+        }
+      }
+    }
+    if (sent) eventsSent++
+    else AppLog.i("input $event not sent: no PC connected on :$port")
+    return sent
+  }
   private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status ->
     ready = status == TextToSpeech.SUCCESS
     AppLog.i(if (ready) "speech: TTS ready" else "speech: TTS failed to start ($status)")
@@ -174,6 +203,7 @@ class SpeechServer(context: Context, port: Int = 9002) : TcpServer(port, "speech
       if (waited > m.ttlMs) {
         dropped++
         AppLog.i("speech: dropped (${waited / 1000.0}s old, ttl ${m.ttlMs / 1000.0}s): ${m.text}")
+        if (queue.isEmpty()) onSpeaking(false)
         continue
       }
       while (!ready) Thread.sleep(100)
@@ -186,11 +216,13 @@ class SpeechServer(context: Context, port: Int = 9002) : TcpServer(port, "speech
         override fun onError(utteranceId: String?) { if (utteranceId == id) done.countDown() }
         override fun onError(utteranceId: String?, errorCode: Int) { if (utteranceId == id) done.countDown() }
       })
+      onSpeaking(true)
       tts.speak(m.text, TextToSpeech.QUEUE_ADD, null, id)
       lastSpoken = m.text
       spoken++
       AppLog.i("speech: ${m.kind}: ${m.text}")
       done.await(30, TimeUnit.SECONDS)
+      if (queue.isEmpty()) onSpeaking(false)
     }
   }
 

@@ -43,6 +43,8 @@ class Glasses(
     private val scope: CoroutineScope,
     private val frames: FrameStore,
     private val onYaw: (Double) -> Unit,
+    /** A glasses gesture as a link event: "select", "capture", "button", "nav" (+ direction). */
+    private val onInputEvent: (String, String?) -> Unit = { _, _ -> },
 ) {
   @Volatile var sessionState = "-"
   @Volatile var streamState = "-"
@@ -239,6 +241,13 @@ class Glasses(
       is InputEvent.Button -> "BUTTON ${ev.button}"
       is InputEvent.Back -> "BACK"
       is InputEvent.Drag -> "DRAG ${ev.action}"
+    }
+    when (ev) {
+      is InputEvent.Select -> onInputEvent("select", null)
+      is InputEvent.Capture -> onInputEvent("capture", ev.pressType.toString().lowercase())
+      is InputEvent.Button -> onInputEvent("button", null)
+      is InputEvent.Nav -> onInputEvent("nav", ev.direction.toString().lowercase())
+      else -> {}
     }
     val at = clock()
     lastInput = "$what @ $at"

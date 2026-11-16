@@ -19,7 +19,20 @@ inbound firewall rules.
 | frames | `http://<phone>:8080/frames.mjpg` | MJPEG (`multipart/x-mixed-replace`), newest frame only, `--source` |
 | | `http://<phone>:8080/snapshot.jpg`, `http://<phone>:8080/` | one frame / a page to check it in a browser |
 | speech | `tcp <phone>:9002`, PC → phone | one JSON line per sentence: `{"text": "...", "kind": "sign"\|"place", "t": <unix s>, "ttl_s": 10\|3}` |
+| user input | same `tcp <phone>:9002` link, phone → PC | one JSON line per input: `{"event": "speech", "text": "read it", "t": <unix s>}` (voice), `{"event": "button"}` (the app's **Read it** button), `{"event": "select"}`, `{"event": "capture", "direction": "short_press"}`, `{"event": "nav", "direction": "left"}` (glasses gestures, DAT Inputs). Unknown events are ignored. |
 | head yaw | `tcp <phone>:9003`, phone → PC | JSON lines ~30/s: `{"yaw_deg": <deg, + = turning right>, "t": <unix s>}` |
+
+User input (with `main.py --goal`): voice is recognised on the phone (Android speech
+recognition, on-device when available, through the glasses' microphones over Bluetooth if
+"Use the glasses' microphone" is ticked) and only the text is sent. Listening pauses while
+the phone speaks. The PC decides what it means (`commands.py`, `guide.py`): "read it" /
+"yes" reads the sign it just offered, "what was that" / "repeat" repeats the last
+instruction, "I usually go left" is kept as the user's own route knowledge, "stop guiding"
+ends. Because listening is always on, speech the PC can't place (someone else talking) is
+logged and ignored unless it has just asked a question. The Read it button and a glasses tap
+(select) do the same as "read it"; capture repeats. Everything is logged in
+`debug_out/guide.jsonl`. Without the phone: type into `tools/fake_phone.py` (a line is
+speech, `!button` / `!select` / `!capture` / `!nav left` are buttons and gestures).
 
 Speech: the phone speaks sentences in order and never interrupts one; a sentence still
 waiting `ttl_s` seconds after it **arrived** is dropped (a hallway warning said late is worse
@@ -130,3 +143,7 @@ python main.py --source http://localhost:8080/frames.mjpg --speak-to localhost:9
 | "motion unavailable" | enable Motion for the app in Wearables Developer Center; everything else works |
 | yaw goes the wrong way | "Invert yaw" in the app, or `--gyro-sign -1` on the PC |
 | `main.py` prints `[source] waiting for ...` forever | wrong address / port, or the app isn't started |
+| app: "voice: unavailable" | no speech recognition service: install / enable Google speech services (Speech Recognition & Synthesis) |
+| app: "voice: no microphone permission" | allow the microphone for the app (Android settings), then Stop / Start |
+| voice not heard through the glasses | untick "Use the glasses' microphone" to use the phone's; some phones don't route recognition to Bluetooth |
+| app: "input ... not sent: no PC connected" | `main.py` must run with `--speak-to <phone>:9002` |

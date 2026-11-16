@@ -149,9 +149,21 @@ class Guide:
     def expecting_note(self, t: float) -> bool:
         return self.question_t is not None and t - self.question_t <= NOTE_WINDOW
 
-    def hear(self, text: str, t: float) -> Decision:
-        """Recognised speech -> decision (parses with commands.parse)."""
-        return self.on_command(commands.parse(text, self.expecting_note(t)), t)
+    def expecting_reply(self, t: float) -> bool:
+        """We just asked something (what they know, or "Want to hear it?")."""
+        return self.expecting_note(t) or (self.asked is not None and t - self.asked.t <= ASK_TTL)
+
+    def hear(self, text: str, t: float, overheard: bool = False) -> Decision:
+        """Recognised speech -> decision (parses with commands.parse). `overheard`: from the
+        phone's always-on listening, so it may be someone else talking. Then, unless we just
+        asked something, only clear commands and route knowledge in the user's own words
+        ("I usually go left", "it's on the right") are taken; the rest is logged and ignored
+        rather than answered with "Sorry, I didn't catch that." every few seconds."""
+        cmd = commands.parse(text, self.expecting_note(t))
+        if overheard and not self.expecting_reply(t):
+            if cmd.kind == "unknown" or (cmd.kind == "note" and not commands.first_person(text)):
+                return Decision("nothing", None, t, reason=f"overheard, ignored: {text!r}")
+        return self.on_command(cmd, t)
 
     def on_command(self, cmd: commands.Command, t: float) -> Decision:
         if cmd.kind == "note":
@@ -214,6 +226,13 @@ class Guide:
                 self.done, self.asked, self.arrived_text = True, None, text
                 return Decision("arrival", text, read.t, read.sign_id, "goal's own plate", m)
             return self._speak(read, m, text, MatchLevel.RANGE, "here", "partial door plate")
+
+        if (m.level == MatchLevel.EXACT and m.arrow in ("up", "down") and len(m.results) == 1
+                and not m.partial):
+            # Just the goal's ID with a vertical arrow: often a door plate given an invented
+            # arrow (Gemma does this), or an overhead "this way". Say both, don't decide.
+            text = f"Sign {where}: {self._goal_words()}. It may be the door itself."
+            return self._speak(read, m, text, MatchLevel.EXACT, "maybe here", "goal's ID, vertical arrow")
 
         if m.level >= MatchLevel.SUBGOAL and m.ambiguous:
             ways = []

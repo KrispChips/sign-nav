@@ -405,3 +405,36 @@ def test_two_labels_without_arrows_are_not_asked():
     assert Guide("A140").on_read(read(1, 0, ("BIOL", "none"), ("UNIV", "none"))).kind == "noted"
     assert Guide("A140").on_read(read(1, 0, ("Pharmacy", "none"), ("Clinic", "none"),
                                           ("Store", "none"))).kind == "asked"
+
+
+# ---------------------------------------------------------------- always-on listening (phone)
+
+def test_overheard_chatter_is_ignored_silently():
+    g = Guide("A140")
+    for words in ("banana bread is great", "let's go to the left bar later"):
+        d = g.hear(words, 100, overheard=True)
+        assert d.kind == "nothing" and d.text is None
+    assert not g.user_notes
+
+
+def test_overheard_commands_and_own_notes_still_work():
+    g = Guide("A140")
+    g.on_read(read(1, 0, ("A121 - A159", "right")))
+    assert g.hear("repeat", 50, overheard=True).kind == "repeat"
+    assert g.hear("I usually go left here", 60, overheard=True).kind == "note"
+
+
+def test_after_a_question_any_reply_counts():
+    g = Guide("A140")
+    g.start(0)
+    assert g.hear("past the big windows", 5, overheard=True).kind == "note"
+    g.on_read(read(1, 40, ("Cafeteria", "left"), ("Library", "right")))
+    assert g.hear("blah blah", 42, overheard=True).text == "Sorry, I didn't catch that."
+
+
+@pytest.mark.parametrize("goal,plate", [("014-190", "014-190"), ("A140", "A140")])
+def test_goal_id_with_vertical_arrow_may_be_the_door(goal, plate):
+    g = Guide(goal)
+    d = g.on_read(read(1, 0, (plate, "down"), where=dict(rel=60.0, mount="wall")))
+    assert d.kind == "spoken" and "It may be the door itself" in d.text and not g.done
+    assert g.on_read(read(1, 1, (plate, "none"))).kind == "arrival"

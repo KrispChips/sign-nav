@@ -148,7 +148,11 @@ button stay as extra ways to send the same commands. One command set, three inpu
 Speech recognition runs on the phone (the glasses' microphones over Bluetooth) and the
 recognised text is sent to the PC on the two-way link of section 4. Questions to the user
 ("Tap to hear it" becomes "Want to hear it?") accept a spoken answer as well as a gesture.
-Unrecognised speech is not guessed at: "Sorry, I didn't catch that."
+Unrecognised speech is not guessed at: "Sorry, I didn't catch that." Listening is always on
+(paused while the phone speaks), so it also hears other people: unless a question was just
+asked, speech that isn't a clear command or the user's own route knowledge ("I usually go
+left", "it's on the right") is logged and ignored, not answered. (Implemented: phone
+`Voice.kt`, PC `commands.py` / `guide.py`; protocol in `docs/LIVE.md`.)
 
 ## 4. "Tell me more": user input from the glasses
 
@@ -163,8 +167,8 @@ Behaviour on the PC:
 
 Protocol: the existing speech connection (`<phone>:9002`, PC <- -> phone) becomes two-way;
 the phone sends JSON lines such as `{"event": "select", "t": <unix s>}` (also `"capture"`,
-`"nav"` with a direction). The PC currently ignores phone -> PC data on this link. Update
-`docs/LIVE.md` with the final message set.
+`"nav"` with a direction), plus `"speech"` with the recognised text and `"button"`. Done;
+the final message set is in `docs/LIVE.md`.
 
 **Experiment first (blocking the gesture choice):** a single tap on the glasses touchpad is
 also how the glasses pause the camera stream (Meta docs: stream state `PAUSED`), and it is not

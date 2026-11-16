@@ -57,6 +57,9 @@ class MainActivity : ComponentActivity() {
         if (result[Manifest.permission.POST_NOTIFICATIONS] == false) {
           AppLog.i("notifications off: streaming still works, without the status notification")
         }
+        if (result[Manifest.permission.RECORD_AUDIO] == false) {
+          AppLog.i("microphone off: no voice commands (the Read it button still works)")
+        }
       }
 
   private var cameraContinuation: CancellableContinuation<PermissionStatus>? = null
@@ -70,7 +73,8 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     setContentView(buildUi())
     androidPermissions.launch(
-        arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS))
+        arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS,
+            Manifest.permission.RECORD_AUDIO))
     lifecycleScope.launch {
       while (true) {
         refresh()
@@ -201,6 +205,25 @@ class MainActivity : ComponentActivity() {
       setTypeface(typeface, Typeface.BOLD)
     }.also { col.addView(it) }
     startStop = button("Start") { onStartStop() }
+    // Big and first after Start: easy to find by touch / TalkBack while walking.
+    button("Read it") { LiveSession.sendEvent("button") }.apply {
+      textSize = 24f
+      minHeight = (96 * resources.displayMetrics.density).toInt()
+      contentDescription = "Read it: hear the last sign, or repeat the last instruction"
+    }
+    CheckBox(this).apply {
+      text = "Listen for voice commands"
+      isChecked = LiveSession.listen
+      setOnCheckedChangeListener { _, on -> LiveSession.setListening(on) }
+    }.also { col.addView(it) }
+    CheckBox(this).apply {
+      text = "Use the glasses' microphone (Bluetooth)"
+      isChecked = LiveSession.glassesMic
+      setOnCheckedChangeListener { _, on ->
+        LiveSession.glassesMic = on
+        if (LiveSession.listen) { LiveSession.setListening(false); LiveSession.setListening(true) }
+      }
+    }.also { col.addView(it) }
     button("Connect glasses (Meta AI app)") { Wearables.startRegistration(this) }
     button("Test speech") {
       LiveSession.speech?.say("Sign navigation test. Hallway ahead on your left.")
