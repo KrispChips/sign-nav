@@ -242,6 +242,8 @@ class Guide:
             return Decision("asked", f"Sign {where}. Want to hear it?", read.t, read.sign_id,
                             "content, nothing about the goal", m)
         reason = ("safety sign" if self._is_safety(m) else "door plate" if self._is_plate(m)
+                  else "building directory" if self._is_building_directory(m)
+                  else "posted plan" if self._is_posted_plan(m)
                   else "already asked" if read.sign_id in self.asked_signs else "little content")
         return self._note(read, m, reason)
 
@@ -327,11 +329,26 @@ class Guide:
             (e.type == "FACILITY" and e.facility in SAFETY_FACILITIES)
             or "FIRE" in (e.name or e.raw) for e in es)
 
+    @staticmethod
+    def _is_posted_plan(m: SignMatch) -> bool:
+        return any(_POSTED_PLAN.search(r.entry.raw) for r in m.results)
+
+    @staticmethod
+    def _is_building_directory(m: SignMatch) -> bool:
+        """Mostly bare building numbers ("14, 16, 20, 22 ->"): when the goal's building isn't
+        on it, the rest isn't worth a question (revisit after user tests)."""
+        es = [r.entry for r in m.results]
+        bare = sum(e.type == "BUILDING" and not _worded(e.raw) for e in es)
+        return bool(es) and bare * 2 >= len(es)
+
     def _has_content(self, read: Read, m: SignMatch) -> bool:
         es = [r.entry for r in m.results if r.entry.type != "UNKNOWN"]
-        if self._is_plate(m):
+        if self._is_plate(m) or self._is_building_directory(m):
             return False
-        return len(es) >= 2 or any(not e.locational for e in es)
+        if self._is_posted_plan(m):
+            return False   # maps / evacuation plans: noted until we can read maps
+        # An arrow, or a real list of labels (two bare words like "BIOL / UNIV" aren't).
+        return any(not e.locational for e in es) or len(es) >= 3
 
     # ------------------------------------------------------------ wording (information, not orders)
 

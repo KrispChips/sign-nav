@@ -386,3 +386,22 @@ def test_floor_in_words_establishes_the_floor():
     g = Guide("1200")
     g.on_read(read(1, 0, ("First Level", "none")))
     assert g.context.user_floor == 1
+
+
+@pytest.mark.parametrize("goal", ["015-100", "B15-100"])
+def test_building_directory_without_the_goal_is_not_asked(goal):
+    d = Guide(goal).on_read(read(1, 0, ("14", "up"), ("16", "left"), ("20", "right"),
+                                 ("Library", "left")))
+    assert d.kind == "noted" and d.reason == "building directory"
+
+
+def test_posted_plan_is_noted_not_asked():
+    d = Guide("A140").on_read(read(1, 0, ("EMERGENCY PLAN", "none"), ("Building 3", "none"),
+                                   ("Toilets", "left")))
+    assert d.kind == "noted" and d.reason == "posted plan"
+
+
+def test_two_labels_without_arrows_are_not_asked():
+    assert Guide("A140").on_read(read(1, 0, ("BIOL", "none"), ("UNIV", "none"))).kind == "noted"
+    assert Guide("A140").on_read(read(1, 0, ("Pharmacy", "none"), ("Clinic", "none"),
+                                          ("Store", "none"))).kind == "asked"
