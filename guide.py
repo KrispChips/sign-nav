@@ -27,6 +27,7 @@ ASK_TTL = 10.0          # a "Want to hear it?" question expires after this (s)
 READ_GRACE = 30.0       # ...but "read it" still reads that sign this long after it was asked
 NOTE_WINDOW = 30.0      # after the opening question, any reply counts as route knowledge
 SAFETY_FACILITIES = frozenset({"exit", "stairs"})
+CHOICE_WINDOW = 60.0    # after a disagreement, "let's go right" is the user's choice (s)
 COARSE_REPEAT_S = 20.0  # building / wing / floor: a new direction is re-said at most this often
 # (successive signs are seen from different angles and arrows are read noisily)
 _POSTED_PLAN = re.compile(r"\b(?:PLAN|EVACUATION|ASSEMBLY|FIRE ESCAPE)\b")
@@ -135,6 +136,7 @@ class Guide:
         self.user_notes: list[dict] = []
         self.user_side: Optional[str] = None
         self.disagreement_said = False
+        self.disagreement: Optional[tuple[float, str]] = None   # (t, the sign's side)
         self.done = False
         self.arrived_text: Optional[str] = None
         self.question_t: Optional[float] = None
@@ -159,11 +161,36 @@ class Guide:
         asked something, only clear commands and route knowledge in the user's own words
         ("I usually go left", "it's on the right") are taken; the rest is logged and ignored
         rather than answered with "Sorry, I didn't catch that." every few seconds."""
+        choice = self._choice(text, t)
+        if choice:
+            return choice
         cmd = commands.parse(text, self.expecting_note(t))
         if overheard and not self.expecting_reply(t):
             if cmd.kind == "unknown" or (cmd.kind == "note" and not commands.first_person(text)):
                 return Decision("nothing", None, t, reason=f"overheard, ignored: {text!r}")
         return self.on_command(cmd, t)
+
+    def _choice(self, text: str, t: float) -> Optional[Decision]:
+        """Shortly after we said a sign disagrees with them, the user decides: "let's trust it
+        to the right", "I'll go left", "follow the sign", "I'll stick with my way". Their
+        choice becomes their note, so the disagreement isn't raised again."""
+        if self.disagreement is None or t - self.disagreement[0] > CHOICE_WINDOW:
+            return None
+        words = set(commands._clean(text).split())
+        sign_side = self.disagreement[1]
+        if words & {"sign", "signs"} and words & {"trust", "follow", "take", "go", "with"}:
+            side = sign_side
+        elif words & {"my", "mine", "stick", "usual"} and not words & {"left", "right"}:
+            side = self.user_side
+        else:
+            side = _note_side(text)
+        if side is None:
+            return None
+        self.user_side, self.disagreement = side, None
+        self.user_notes.append(dict(t=t, text=text, side=side, choice=True))
+        said = {"ahead": "straight ahead"}.get(side, side)
+        return Decision("note", f"Okay, {said}.", t,
+                        reason=f"user's choice after a disagreement (side: {side})")
 
     def on_command(self, cmd: commands.Command, t: float) -> Decision:
         if cmd.kind == "note":
@@ -282,6 +309,7 @@ class Guide:
         if self.user_side and side and side != self.user_side and not self.disagreement_said:
             text += f" You said {self._side_words(self.user_side)}; it's your call."
             self.disagreement_said = True
+            self.disagreement = (read.t, side)   # the user may now choose: see hear()
             reason += "; disagrees with the user's note"
         self.current = Instruction(level, way, read.sign_id, read.t, text)
         self.asked = None     # a new instruction takes priority over a pending question

@@ -31,6 +31,7 @@ class _Reconnecting:
         self.sock = None
         self.connected = threading.Event()
         self._stop = threading.Event()
+        self._quiet = False
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
@@ -45,14 +46,19 @@ class _Reconnecting:
                     warned = True
                 time.sleep(self.retry_s)
                 continue
-            print(f"[{self.name}] connected to {self.addr[0]}:{self.addr[1]}", flush=True)
+            # With `adb forward` the connection is accepted even while the app's server isn't
+            # up, then dropped at once: say "connected" only for links that last.
+            if not self._quiet:
+                print(f"[{self.name}] connected to {self.addr[0]}:{self.addr[1]}", flush=True)
             warned = False
             self.sock = s
             self.connected.set()
+            began = time.time()
             try:
                 self.session(s)
             except OSError as e:
-                print(f"[{self.name}] connection lost ({e}); reconnecting", flush=True)
+                if time.time() - began > 2.0:
+                    print(f"[{self.name}] connection lost ({e}); reconnecting", flush=True)
             finally:
                 self.connected.clear()
                 self.sock = None
@@ -60,6 +66,7 @@ class _Reconnecting:
                     s.close()
                 except OSError:
                     pass
+            self._quiet = time.time() - began < 2.0
             time.sleep(self.retry_s)
 
     def session(self, s):

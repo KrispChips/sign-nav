@@ -438,3 +438,45 @@ def test_goal_id_with_vertical_arrow_may_be_the_door(goal, plate):
     d = g.on_read(read(1, 0, (plate, "down"), where=dict(rel=60.0, mount="wall")))
     assert d.kind == "spoken" and "It may be the door itself" in d.text and not g.done
     assert g.on_read(read(1, 1, (plate, "none"))).kind == "arrival"
+
+
+# ---------------------------------------------------------------- the user decides after a disagreement
+
+def _disagreed(goal="A140"):
+    g = Guide(goal)
+    g.add_user_note("I usually go left from the entrance", 0)
+    d = g.on_read(read(1, 10, ("A121 - A159", "right")))
+    assert "your call" in d.text
+    return g
+
+
+@pytest.mark.parametrize("words,side", [
+    ("Let's trust it to the right", "right"),
+    ("I'll go right then", "right"),
+    ("follow the sign", "right"),
+    ("let's go with the sign", "right"),
+    ("no, I'll stick with my way", "left"),
+    ("I'm going left", "left"),
+])
+def test_user_choice_after_disagreement(words, side):
+    g = _disagreed()
+    d = g.hear(words, 20, overheard=True)
+    assert d.kind == "note" and d.text == f"Okay, {side}." and g.user_side == side
+    assert g.user_notes[-1]["choice"]
+
+
+def test_after_choosing_the_sign_it_stops_disagreeing():
+    g = _disagreed()
+    g.hear("Let's trust it to the right", 20, overheard=True)
+    d = g.on_read(read(2, 30, ("A140", "right")))
+    assert "You said" not in d.text
+
+
+def test_choice_window_expires():
+    g = _disagreed()
+    d = g.hear("let's go right", 10 + 120, overheard=True)
+    assert d.kind == "nothing"      # long after: chatter again
+
+
+def test_no_choice_without_a_disagreement():
+    assert Guide("A140").hear("let's go right", 5, overheard=True).kind == "nothing"
