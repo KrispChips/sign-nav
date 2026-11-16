@@ -17,6 +17,20 @@ without per-building setup. Later steps build on it: step 2 adds a small topolog
 instructions to the next junction; that is out of scope here, but step 1 must record what
 step 2 needs (see "Noted, not spoken").
 
+## The user stays in charge (added 2026-11-15)
+
+sign-nav assists; it does not decide. The people using it know things the system can't see
+and the choice of where to walk is always theirs.
+- **Ask for what they know.** After the goal is set, ask once, briefly, whether they know
+  anything that helps: which way the goal is, how the building is laid out, a shorter route,
+  a route they usually take. "Nothing" is a fine answer. Keep what they say as context for
+  the session (logged with the decisions), and let them add to it any time.
+- **Their knowledge counts.** If a sign disagrees with what they told us, say both and let
+  them choose ("You said it's to the right; this sign points left for 014-190.") — never
+  silently override them, and never repeat the disagreement once they've chosen.
+- **Information, not orders.** Say what the sign says and where it is ("014-190: sign on
+  your left points right"), not "turn right".
+
 ## Scope
 
 In scope:
@@ -117,6 +131,23 @@ Noted items are recorded with time, sign position, the user's heading and the pa
 safety signs, other rooms' plates, unasked or unanswered signs. Step 2 uses them: e.g. the
 sequence of room numbers along a corridor (rising or falling) hints whether the user is
 walking toward or away from the goal. That is a hint only; numbering is not always monotonic.
+
+## 4a. Talking to it: voice commands first (added 2026-11-15)
+
+The main input is a short spoken conversation; glasses gestures and the phone's "Read it"
+button stay as extra ways to send the same commands. One command set, three inputs:
+
+| command (examples of what the user says) | effect |
+|---|---|
+| "read it", "what does it say", "yes" (to "Tap to hear it") | read the pending / last sign |
+| "what was that", "repeat" | repeat the current instruction |
+| "I usually go left here", "the lab is on the north side", "nothing" | add to the user's context |
+| "stop guiding" | end the goal (setting a goal by voice stays a later step) |
+
+Speech recognition runs on the phone (the glasses' microphones over Bluetooth) and the
+recognised text is sent to the PC on the two-way link of section 4. Questions to the user
+("Tap to hear it" becomes "Want to hear it?") accept a spoken answer as well as a gesture.
+Unrecognised speech is not guessed at: "Sorry, I didn't catch that."
 
 ## 4. "Tell me more": user input from the glasses
 
