@@ -95,6 +95,8 @@ def main():
                     help="head yaw from the glasses via the phone app (port 9003)")
     ap.add_argument("--fps", type=float, default=5.0, help="processing rate")
     ap.add_argument("--model", default="gemma4:e4b")
+    ap.add_argument("--prompt", default=None,
+                    help="reader prompt version (vlm.PROMPTS: v1..v5; default vlm.DEFAULT_PROMPT)")
     ap.add_argument("--think", action="store_true",
                     help="let Gemma reason before reading: ~5 points better arrows, ~10x slower "
                          "(~2.5 s a sign instead of ~0.25 s)")
@@ -169,7 +171,8 @@ def main():
         sign_filter = SignFilter(OcrCheck(a.ocr_min_conf, a.ocr_min_chars),
                                  None if a.no_clip else ClipCheck(margin=a.clip_margin,
                                                                   device=detector.device))
-    reader = SignReader(a.model, a.ollama_host, think=a.think)
+    reader = SignReader(a.model, a.ollama_host, think=a.think,
+                        **({"prompt": a.prompt} if a.prompt else {}))
     reader.warm_up()
     legibility = None
     if not a.no_legibility:

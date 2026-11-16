@@ -7,6 +7,8 @@ Prompt versions (compare them with `python vlm_eval.py`):
   v3      layout first: list the sign's arrows (direction + where they are), then give each
           entry the id of its arrow. Aimed at pairing text with the wrong arrow, the main
           arrow error on signs whose entries point different ways.
+  v5      the user's rewrite: short and plain; symbols named as places (taxi included);
+          up-escalator / down-escalator as ways to a destination; "from": text|symbol.
   v4      v2 plus: each destination once, in English (multilingual signs repeat it in Malay,
           Chinese, Tamil), and pictograms named by the place they mark, never described.
           v2's extra "invented" entries were almost all such translations and icon
@@ -80,9 +82,31 @@ _V4_RULES = """- Each destination once, in English: if the sign repeats it in ot
 """
 PROMPT_V4 = PROMPT_V2.replace("- Copy text exactly.", _V4_RULES + "- Copy text exactly.")
 
-PROMPTS = {"v1": PROMPT, "v2": PROMPT_V2, "v3": PROMPT_V3, "v4": PROMPT_V4}
+PROMPT_V5 = """Read this navigation sign (a cropped photo).
+
+List every destination on it: written text (a place name or room number) or a symbol
+that stands for a place (toilet, taxi, exit, wheelchair access, information, ...). Name
+a symbol by its place, e.g. "Taxi", never by the drawing.
+
+For each destination, give the way to it, as seen facing the sign:
+  up (straight ahead), left, right, up-left, up-right, down, down-left, down-right,
+  up-escalator, down-escalator, none.
+An arrow beside a group of lines applies to every line in the group.
+When the way to a destination is an escalator symbol, give up-escalator or down-escalator.
+Arrows that are part of another symbol (for example inside an exit icon) are not directions.
+Use none when no arrow belongs to it: a name on a door, "you are here", and floor markers
+such as L2 or B1 that say which level this is.
+
+English only; skip other languages. Copy text exactly; skip what you can't read.
+If nothing is legible, return {"entries": []}.
+Return only JSON: {"entries": [{"text": "...", "from": "text|symbol", "arrow": "..."}]}"""
+
+PROMPTS = {"v1": PROMPT, "v2": PROMPT_V2, "v3": PROMPT_V3, "v4": PROMPT_V4, "v5": PROMPT_V5}
 DEFAULT_PROMPT = "v4"     # chosen with vlm_eval.py, see the module docstring
 ARROWS = {"left", "right", "up", "down", "up-left", "up-right", "down-left", "down-right", "none"}
+# v5 may answer "the way is an escalator / stairs": kept as arrow up/down plus "via", so
+# everything downstream that only knows ARROWS still works.
+_VIA = re.compile(r"^(up|down)[-_ ]?(escalator|stairs?)$")
 
 
 def _prep(crop, long_side=640):
@@ -113,9 +137,17 @@ def parse(raw, version="v1"):
         if not re.search(r"[A-Za-z0-9]", text):   # nothing an English voice can say
             continue
         a = str(e.get("arrow", "none")).strip()
+        via = _VIA.match(a.lower())
+        if via:
+            a = via.group(1)
         arrow = ids.get(a.upper()) if a.upper() in ids else canonical_arrow(a)
         if text:
-            entries.append({"text": text, "arrow": arrow if arrow in ARROWS else "none"})
+            out = {"text": text, "arrow": arrow if arrow in ARROWS else "none"}
+            if via:
+                out["via"] = "stairs" if via.group(2).startswith("stair") else "escalator"
+            if e.get("from") in ("text", "symbol"):
+                out["from"] = e["from"]
+            entries.append(out)
     return entries
 
 

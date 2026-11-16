@@ -38,9 +38,11 @@ ARROW_TO_SG = {"up": "forward", "up-left": "forward-left", "up-right": "forward-
                "down-right": "down-right", "none": "locational"}
 
 
-def to_sg(text: str, arrow: str) -> str:
-    """Our {text, arrow} -> their direction word."""
+def to_sg(text: str, arrow: str, via: str = None) -> str:
+    """Our {text, arrow[, via]} -> their direction word."""
     a = ARROW_TO_SG.get(arrow, "locational")
+    if via and arrow in ("up", "down"):   # reader said the way is an escalator / stairs
+        return f"{arrow}-{via}"
     t = text.lower()
     for thing in ("escalator", "stairs"):
         if thing in t or (thing == "stairs" and "stair" in t):
@@ -125,7 +127,7 @@ def load_reads(path: str) -> list[dict]:
 
 
 def parsing_pred(reads: list[dict]) -> list[dict]:
-    return [{e["text"].lower(): to_sg(e["text"], e.get("arrow", "none"))
+    return [{e["text"].lower(): to_sg(e["text"], e.get("arrow", "none"), e.get("via"))
              for e in r["entries"] if e.get("text")} for r in reads]
 
 
@@ -143,8 +145,11 @@ def guide_direction(goal: str, reads: list[dict]):
             best = (m, r)
     if best is None:
         return None, None
-    m = best[0]
-    return to_sg(m.entry.source or m.entry.raw, m.arrow or "none"), m
+    m, r = best
+    text = m.entry.source or m.entry.raw
+    via = next((e.get("via") for e in r["entries"] if e.get("text") in (m.entry.source, m.entry.raw)),
+               None)
+    return to_sg(text, m.arrow or "none", via), m
 
 
 def cmd_score(a):

@@ -6,7 +6,7 @@ from vlm_eval import arrow_close, score_sign, summarize
 
 
 def test_all_prompts_exist():
-    assert set(PROMPTS) == {"v1", "v2", "v3", "v4"}
+    assert set(PROMPTS) == {"v1", "v2", "v3", "v4", "v5"}
     assert "in English" in PROMPTS["v4"] and "Never describe the" in PROMPTS["v4"]
     assert PROMPTS["v4"].split("- Each destination once")[0] == PROMPTS["v2"].split("- Copy text exactly")[0]
     assert "up-left" in PROMPTS["v2"] and '"arrows"' in PROMPTS["v3"]
