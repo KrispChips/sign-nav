@@ -155,9 +155,13 @@ _CONNECTORS = {"-", "TO", "THRU", "THROUGH", "TILL", "UNTIL"}
 _PARITY = re.compile(r"\b(?P<p>ODD|EVEN)\b(?:\s+(?:NUMBERS|NUMBERED|NOS|NUMBER|SIDE))?")
 _SERIES = re.compile(r"\b(?P<n>\d{1,2})00\s*(?:S|SERIES)\b")
 
+_ORDINALS = ("FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH", "SEVENTH", "EIGHTH",
+             "NINTH", "TENTH")
 _FLOOR_PATTERNS = (
     re.compile(r"\b(?:LEVEL|LVL|LV|FLOOR|FLR|FL)\s*(?P<b>B)?(?P<n>\d{1,2})\b"),
     re.compile(r"\b(?P<n>\d{1,2})(?:ST|ND|RD|TH)\s*(?:FLOOR|FLR|FL|LEVEL|LVL)\b"),
+    re.compile(r"\b(?P<w>FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|NINTH|TENTH)"
+               r"\s*(?:FLOOR|FLR|FL|LEVEL|LVL)\b"),
     re.compile(r"\bL(?P<n>\d{1,2})\b"),
     re.compile(r"\b(?P<b>B)(?P<n>\d)\b"),
     re.compile(r"\bBASEMENT(?:\s*(?P<n>\d))?\b"),
@@ -277,7 +281,9 @@ def _floors(text: str) -> list[int]:
     for rx in _FLOOR_PATTERNS:
         for m in rx.finditer(text):
             g = m.groupdict()
-            if g.get("g"):
+            if g.get("w"):
+                value = _ORDINALS.index(g["w"]) + 1
+            elif g.get("g"):
                 value = 1   # ground; rule.ground_floor is applied by the matcher if needed
             elif g.get("n") is None:
                 value = -1  # bare BASEMENT

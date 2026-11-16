@@ -271,7 +271,7 @@ def test_new_note_can_raise_disagreement_again():
     g.add_user_note("left", 0)
     g.on_read(read(1, 1, ("A121 - A159", "right")))
     g.add_user_note("no wait, I usually take the left corridor", 2)
-    d = g.on_read(read(2, 3, ("A121 - A159", "up-right")))
+    d = g.on_read(read(2, 3, ("A140", "right")))
     assert "You said" in d.text
 
 
@@ -316,3 +316,73 @@ def test_decision_log_has_the_match():
     d = Guide("A140").on_read(read(1, 0, ("A121 - A159", "right")))
     log = d.log()
     assert log["decision"] == "spoken" and log["level"] == "RANGE" and log["arrow"] == "right"
+
+
+# ---------------------------------------------------------------- building numbers on direction signs
+
+@pytest.mark.parametrize("goal", ["014-190", "B14-100", "14-100"])
+def test_bare_building_number_with_arrow_is_spoken(goal):
+    d = Guide(goal).on_read(read(1, 0, ("14", "up"), ("16", "left"), ("20", "right")))
+    assert d.kind == "spoken" and "building 14, straight ahead" in d.text
+
+
+@pytest.mark.parametrize("goal", ["A140", "1200"])
+def test_bare_numbers_are_not_buildings_for_other_conventions(goal):
+    d = Guide(goal).on_read(read(1, 0, ("14", "up"), ("16", "left")))
+    assert d.kind != "spoken"
+
+
+def test_list_of_building_numbers_is_not_a_place_label():
+    g = Guide("014-190")
+    d = g.on_read(read(1, 0, ("14", "none"), ("16", "none"), ("18 thru 60", "none")))
+    assert "You're in" not in (d.text or "") and g.context.user_building is None
+
+
+def test_single_building_label_says_where_you_are():
+    g = Guide("014-190")
+    d = g.on_read(read(1, 0, ("Building 14", "none")))
+    assert d.kind == "spoken" and d.text == "You're in building 14." and g.context.user_building == 14
+
+
+# ---------------------------------------------------------------- found on the demo walk
+
+def test_coarse_direction_flip_soon_after_is_not_resaid():
+    g = Guide("014-190")
+    assert g.on_read(read(1, 0, ("14", "right"), ("16", "left"))).kind == "spoken"
+    assert g.on_read(read(2, 3, ("14", "up"), ("16", "left"))).kind == "noted"
+    assert g.on_read(read(3, 25, ("14", "left"), ("16", "left"))).kind == "spoken"
+
+
+def test_specific_direction_change_is_said_at_once():
+    g = Guide("A140")
+    g.on_read(read(1, 0, ("A121 - A159", "right")))
+    assert g.on_read(read(2, 2, ("A121 - A159", "left"))).kind == "spoken"
+
+
+def test_same_side_worded_differently_is_not_resaid():
+    g = Guide("A140")
+    g.on_read(read(1, 0, ("A121 - A159", "right")))                       # "to the right"
+    assert g.on_read(read(2, 1, ("A121 - A159", "up-right"))).kind == "noted"   # "ahead to the right"
+
+
+@pytest.mark.parametrize("entries", [[("EMERGENCY PLAN", "none"), ("Building 15", "none")],
+                                     [("Evacuation plan", "none"), ("Level 3", "none")]])
+def test_posted_plans_do_not_say_where_you_are(entries):
+    g = Guide("014-190")
+    d = g.on_read(read(1, 0, *entries))
+    assert "You're" not in (d.text or "")
+    assert g.context.user_building is None and g.context.user_floor is None
+
+
+@pytest.mark.parametrize("label", ["B1", "14"])
+def test_bare_codes_do_not_say_where_you_are(label):
+    g = Guide("014-190")
+    d = g.on_read(read(1, 0, (label, "none")))
+    assert "You're" not in (d.text or "")
+    assert g.context.user_floor is None and g.context.user_building is None
+
+
+def test_floor_in_words_establishes_the_floor():
+    g = Guide("1200")
+    g.on_read(read(1, 0, ("First Level", "none")))
+    assert g.context.user_floor == 1

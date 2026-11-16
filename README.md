@@ -305,6 +305,30 @@ within 45 degrees), split by one-arrow vs mixed-arrow signs, straight / diagonal
 share of entries given the same arrow from both views, and invented entries per read. Add
 `--model <ollama tag>` to try a larger model.
 
+## Guidance to a goal (`--goal`, `guide.py`)
+
+```powershell
+python main.py --source walk.mp4 --hfov 69 --goal 014-190 --out-video guided.mp4 --commands
+```
+With `--goal` only what helps reach it is spoken (`--announce all` reads every sign again).
+Any numbering works without setup (`014-190`, `A140`, `C2.15`, `1200`, a name); `--rule`
+picks a YAML override. Per OCR-confirmed read the guide (`guide.py`, spec in
+`docs/step1-goal.md`) decides: **spoken** (the goal, a range / building / wing / floor
+containing it, a lift when it's on another floor, matching arrows that disagree), **arrival**
+(the goal's own plate; guidance stops), **asked** ("Sign on your left. Want to hear it?"),
+or **noted** (safety signs, other rooms' plates; kept for step 2). It first asks what the user
+already knows about the way and never overrides it: a sign that disagrees is said with
+"You said ...; it's your call". Wording says what signs say, not what to do.
+`--commands` lets you type what the user would say ("read it", "repeat", "I usually go
+left"); the phone link for speech comes next. Decisions go to `reads.jsonl` (`guide` field),
+inputs and answers to `guide.jsonl`; the video's chat panel greys out noted signs.
+
+Replay recorded reads through the guide in seconds (no video, GPU or Gemma):
+```powershell
+python guide_replay.py --goal 014-190                     # every run in debug_out/reads.jsonl
+python guide_replay.py --goal A140 --run 7 --all --say "5:it's on the left"
+```
+
 ## Annotated video
 
 ```bash

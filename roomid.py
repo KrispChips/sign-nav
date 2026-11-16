@@ -101,6 +101,16 @@ class GoalRule(BuildingRule):
     as the sign shows them; entries.py and matcher.py use it like any other rule."""
     shape: Optional[Shape] = None
 
+    def find_rooms(self, text: str) -> list[tuple[RoomId, int, int]]:
+        out = super().find_rooms(text)
+        if self.shape.section_is_building and len(out) == 1:
+            r, s, e = out[0]
+            # A bare "014" on its own is a building here, not room 14 (leading zero).
+            if (s, e) == (0, len(text.strip())) and r.building is None and not r.prefix \
+                    and text.strip().startswith("0"):
+                return []
+        return out
+
     def _room(self, m: re.Match) -> RoomId:
         g = m.groupdict()
         s = self.shape
@@ -200,4 +210,9 @@ def rule_for_goal(goal: str, override: Optional[str] = None) -> BuildingRule:
     if s is None:
         return NoHintRule(**_base("no-hint", _NO_HINT_REGEX, ()))
     keep = tuple(dict.fromkeys(s.prefix)) if s.prefix else ()
-    return GoalRule(**_base(f"goal:{s.kind}", re.compile(_goal_regex(s)), keep), shape=s)
+    base = _base(f"goal:{s.kind}", re.compile(_goal_regex(s)), keep)
+    if s.section_is_building:
+        # Building-room numbering: a bare number on a sign ("14 ->", "16 <-") is a building
+        # (campus direction signs list them); a bare room-length number stays a room plate.
+        base["building_regexes"] = _BUILDING_REGEXES + (re.compile(r"^(?P<building>\d{1,3})$"),)
+    return GoalRule(**base, shape=s)

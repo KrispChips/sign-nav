@@ -13,6 +13,7 @@ Decisions: spoken / arrival / asked / noted / read (on request) / repeat / note 
 unclear / stop / nothing. Pure Python, the clock is passed in; no I/O (main.py logs
 Decision.log()).
 """
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -26,6 +27,9 @@ ASK_TTL = 10.0          # a "Want to hear it?" question expires after this (s)
 READ_GRACE = 30.0       # ...but "read it" still reads that sign this long after it was asked
 NOTE_WINDOW = 30.0      # after the opening question, any reply counts as route knowledge
 SAFETY_FACILITIES = frozenset({"exit", "stairs"})
+COARSE_REPEAT_S = 20.0  # building / wing / floor: a new direction is re-said at most this often
+# (successive signs are seen from different angles and arrows are read noisily)
+_POSTED_PLAN = re.compile(r"\b(?:PLAN|EVACUATION|ASSEMBLY|FIRE ESCAPE)\b")
 
 
 @dataclass
@@ -95,6 +99,11 @@ def _side(phrase: Optional[str]) -> Optional[str]:
     if "behind" in p or "back" in p:
         return "back"
     return None
+
+
+def _worded(raw: str) -> bool:
+    """'BUILDING 14', 'LEVEL 2', 'BASEMENT' rather than a bare code like '14' or 'B1'."""
+    return bool(re.search(r"[A-Z]{3,}", raw))
 
 
 def _note_side(text: str) -> Optional[str]:
@@ -220,7 +229,7 @@ class Guide:
             text = self._guidance_text(m, where, way)
             return self._speak(read, m, text, m.level, way, "helps reach the goal")
 
-        if m.level >= MatchLevel.SUBGOAL and m.locational:
+        if m.level >= MatchLevel.SUBGOAL and m.locational and self._labels_here(m):
             text = self._here_text(m)
             if text:
                 return self._speak(read, m, text, m.level, "here", "says where the user is")
@@ -241,9 +250,14 @@ class Guide:
         cur = self.current
         if cur is not None and level < cur.level and cur.way != "here":
             return self._note(read, m, f"less specific than the current instruction ({reason})")
-        if cur is not None and level == cur.level and (way == cur.way or read.sign_id == cur.sign_id):
-            return self._note(read, m, "same as the current instruction")
         side = _side(way)
+        if cur is not None and level == cur.level and (
+                way == cur.way or read.sign_id == cur.sign_id
+                or (side is not None and side == _side(cur.way))):
+            return self._note(read, m, "same as the current instruction")
+        if (cur is not None and level == cur.level and level <= MatchLevel.AREA
+                and read.t - cur.t < COARSE_REPEAT_S):
+            return self._note(read, m, "coarse direction changed again too soon (arrow noise?)")
         if self.user_side and side and side != self.user_side and not self.disagreement_said:
             text += f" You said {self._side_words(self.user_side)}; it's your call."
             self.disagreement_said = True
@@ -265,14 +279,19 @@ class Guide:
         """Building / wing / level / floor known from plates and signs that label this place,
         so partial plates ("190" for 014-190) can count fully."""
         from matcher import parse_sign
-        for e in parse_sign(read.entries, self.rule):
+        parsed = parse_sign(read.entries, self.rule)
+        if any(_POSTED_PLAN.search(e.raw) for e in parsed):
+            return   # a posted map / evacuation plan names places it shows, not where you stand
+        n_buildings = sum(e.type == "BUILDING" for e in parsed)
+        for e in parsed:
             if not e.locational:
                 continue
-            if e.type == "BUILDING" and e.building is not None:
+            if e.type == "BUILDING" and e.building is not None and n_buildings == 1 \
+                    and _worded(e.raw):
                 self.context.user_building = e.building
             if e.type == "AREA" and e.area and len(e.area[1]) <= 2:
                 self.context.user_prefix = e.area[1]
-            if e.type == "FLOOR" and len(e.floors) == 1:
+            if e.type == "FLOOR" and len(e.floors) == 1 and _worded(e.raw):
                 self.context.user_floor = e.floors[0]
             for r in e.rooms:
                 if r.building is not None:
@@ -283,6 +302,18 @@ class Guide:
                     self.context.user_section = r.section
 
     # ------------------------------------------------------------ classification
+
+    @staticmethod
+    def _labels_here(m: SignMatch) -> bool:
+        """A sign labels this place only if it names one building / wing / floor in words
+        ("Building 14", "Level 2"): a list of numbers without arrows ("14, 16, 18 thru 60")
+        is a directory, a bare "14" or "B1" too little to go on, a posted plan names what
+        it shows."""
+        es = [r.entry for r in m.results]
+        if any(_POSTED_PLAN.search(e.raw) for e in es):
+            return False
+        kinds = [e for e in es if e.type == m.entry.type]
+        return len(kinds) == 1 and (m.entry.type == "AREA" or _worded(m.entry.raw))
 
     @staticmethod
     def _is_plate(m: SignMatch) -> bool:

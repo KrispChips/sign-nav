@@ -50,7 +50,10 @@ class ChatLog:
                                lines=[f"OCR: {ocr_text}"] if ocr_text else [],
                                thumb=tr.best_crop.copy(), thumb_h=40))
 
-    def sign_result(self, tr, t, sentence, entries, mount, error=None, confirmed=True):
+    def sign_result(self, tr, t, sentence, entries, mount, error=None, confirmed=True,
+                    decision=None):
+        """`decision`: the guide's (spoken / arrival / asked / noted ...) when there is a goal;
+        noted signs are greyed out."""
         item = self._by_track.get(tr.id)
         if item is None:
             return
@@ -58,13 +61,22 @@ class ChatLog:
         if error:
             item.update(color=ERR_COL, status="read failed", lines=[str(error)[:200]])
             return
-        item.update(color=SIGN_COL if entries and confirmed else MUTED,
-                    status=(f"read, {mount}" if confirmed else "not confirmed by OCR: not spoken")
-                    if entries else "nothing legible")
+        relevant = decision is None or decision in ("spoken", "arrival", "asked")
+        status = (f"read, {mount}" if confirmed else "not confirmed by OCR: not spoken") \
+            if entries else "nothing legible"
+        if decision and confirmed and entries:
+            status = f"{decision}, {mount}"
+        item.update(color=SIGN_COL if entries and confirmed and relevant else MUTED, status=status)
         item["lines"] = ([f"“{sentence}”"] if sentence else []) + (
             [f"filter: {item['check']}"] if item.get("check") else []) + [
             f"• {e['text']}" + ("" if e["arrow"] == "none" else f"  (arrow: {e['arrow']})")
             for e in entries]
+
+    def guide(self, t, heard, text, kind):
+        """What the user said (if anything) and the guide's answer."""
+        lines = ([f"you: “{heard}”"] if heard else []) + ([f"“{text}”"] if text else [])
+        self.items.append(dict(t=t, color=OPEN_COL if text else MUTED, title="Guide",
+                               status=kind, thumb=None, lines=lines))
 
     def place(self, t, event, spoken=True):
         """A hallway / entrance / open area event from intersection.IntersectionWatcher."""

@@ -123,7 +123,19 @@ def main():
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--out-video", help="write an annotated video (scene + chat log), e.g. annotated.mp4")
     ap.add_argument("--no-tts", action="store_true")
+    ap.add_argument("--goal", help="room or place to guide to (any numbering: 014-190, A140, "
+                                   "C2.15, 1200, a name); only what helps reach it is spoken")
+    ap.add_argument("--rule", help="optional building numbering override (config/buildings/<name>)")
+    ap.add_argument("--announce", choices=("goal", "all"), default=None,
+                    help="goal: guidance only (default with --goal); all: read every sign")
+    ap.add_argument("--commands", action="store_true",
+                    help="type what the user would say on the PC (\"read it\", \"repeat\", "
+                         "\"I usually go left\", ...), one line each")
     a = ap.parse_args()
+    if a.announce is None:
+        a.announce = "goal" if a.goal else "all"
+    if a.announce == "goal" and not a.goal:
+        ap.error("--announce goal needs --goal")
 
     from detector import DISTRACTORS, SignDetector   # heavy imports after arg parsing
     from vlm import SignReader
@@ -163,6 +175,20 @@ def main():
     heading = Heading()
     speaker = Announcer(enabled=not a.no_tts,
                         remote=PhoneSpeaker(parse_addr(a.speak_to, 9002)) if a.speak_to else None)
+    guide, commands_in = None, None
+    if a.announce == "goal":
+        from guide import Guide, Read
+        guide = Guide(a.goal, rule_override=a.rule)
+        print(f"[guide] goal {guide.target.describe()} (rule {guide.rule.name})")
+    if a.commands:
+        commands_in = queue.Queue()
+
+        def _stdin():
+            for line in sys.stdin:
+                if line.strip():
+                    commands_in.put(line.strip())
+        threading.Thread(target=_stdin, daemon=True).start()
+        print("[guide] type what the user says, one line each (\"read it\", \"repeat\", ...)")
     watcher = None if a.no_intersections else IntersectionWatcher(
         DepthEstimator(resolve_model(a.depth_model), long_side=a.depth_long_side),
         PlaceTracker(hall_min=a.hall_min), eye_height=a.eye_height,
@@ -173,6 +199,7 @@ def main():
     log = open(os.path.join(a.debug_dir, "reads.jsonl"), "a")
     ilog = open(os.path.join(a.debug_dir, "intersections.jsonl"), "a")
     flog = open(os.path.join(a.debug_dir, "filter.jsonl"), "a")
+    glog = open(os.path.join(a.debug_dir, "guide.jsonl"), "a")   # inputs and what they did
     llog = open(os.path.join(a.debug_dir, "legibility.jsonl"), "a")
     rejected_dir = os.path.join(a.debug_dir, "rejected")
     os.makedirs(rejected_dir, exist_ok=True)
@@ -181,6 +208,16 @@ def main():
     chat = ChatLog()
     video = VideoOut(a.out_video, a.fps) if a.out_video else None
     flash_until, flash = -1.0, None
+
+    def guide_say(d, heard=None):
+        """Speak, log and show a guide decision that isn't about one sign read."""
+        glog.write(json.dumps(dict(d.log(), heard=heard)) + "\n"); glog.flush()
+        chat.guide(d.t, heard, d.text, d.kind)
+        if d.text:
+            speaker.say(d.text, dedupe=False)
+
+    if guide is not None:
+        guide_say(guide.start(0.0))
 
     def handle_read(fut, job, t):
         tr, info, ocr_text = job["track"], job["info"], job["ocr"]
@@ -197,20 +234,27 @@ def main():
         mount = mounting(info["theta"], info["frontality"])
         rel = heading.relative(tr.last_theta, tr.last_yaw)   # where it is NOW-ish
         sentence = describe(entries, rel, mount)
-        confirmed, outcome = True, None
+        confirmed, outcome, decision = True, None, None
         if legibility is not None:
             # Same check as the simulation: the returned printed text must be backed by OCR on
             # the same view. Unconfirmed reads aren't spoken; the trigger raises this sign's
             # threshold and reads again closer (or gives up after two).
             confirmed = cross_check(entries, ocr_text)
             outcome = triggers[tr.id].read_result(confirmed).action
+        if guide is not None and confirmed and entries:
+            decision = guide.on_read(Read(tr.id, entries, t, rel, mount, ocr_text or None,
+                                          heading.value))
+            sentence = decision.text
+        said = sentence if confirmed else None
         log.write(json.dumps(dict(track=tr.id, t=t, entries=entries, raw=raw,
                                   mount=mount, rel=rel, q=tr.best_q, info=info,
                                   attempt=tr.attempts, confirmed=confirmed, outcome=outcome,
-                                  said=sentence if confirmed else None)) + "\n"); log.flush()
-        chat.sign_result(tr, t, sentence if confirmed else None, entries, mount, confirmed=confirmed)
+                                  said=said, goal=a.goal,
+                                  guide=decision.log() if decision else None)) + "\n"); log.flush()
+        chat.sign_result(tr, t, said, entries, mount, confirmed=confirmed,
+                         decision=decision.kind if decision else None)
         if sentence and confirmed:
-            speaker.say(sentence)
+            speaker.say(sentence, dedupe=decision is None)
 
     def submit(tr, t, crop=None, info=None, ocr_text=""):
         """Filter, then read. `crop` defaults to the track's best view (no legibility)."""
@@ -311,6 +355,10 @@ def main():
 
         for fut in [f for f in pending if f.done()]:
             handle_read(fut, pending.pop(fut), frame.t)
+        while commands_in is not None and not commands_in.empty():
+            heard = commands_in.get()
+            if guide is not None:
+                guide_say(guide.hear(heard, frame.t), heard)
 
         if a.show or video:
             info = f"t={frame.t:6.1f}s  {1000*(time.time()-t0):.0f}ms/frame  reading={len(pending)}"
