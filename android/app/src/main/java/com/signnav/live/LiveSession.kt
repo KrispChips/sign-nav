@@ -79,6 +79,8 @@ object LiveSession {
         "session" to (g?.sessionState ?: "-"),
         "stream" to (g?.streamState ?: "-"),
         "motion" to (g?.motionState ?: "-"),
+        "inputs" to (g?.inputsState ?: "-"),
+        "last input" to (g?.lastInput ?: "-"),
         "stream size" to (g?.streamSize ?: "-"),
         "PC frames" to "${mjpeg?.clients?.size ?: 0} client(s)",
         "PC speech" to "${speech?.clients?.size ?: 0} client(s)",
